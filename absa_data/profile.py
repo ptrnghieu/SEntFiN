@@ -93,21 +93,60 @@ def fiqa_section(p: pd.DataFrame) -> str:
         {"split": s, **{t: int(n) for t, n in p[p["split"] == s].drop_duplicates("text_id")["text_type"].value_counts().items()}}
         for s in SPLITS
     ])]
-    l1 = p["aspect_l1"].value_counts()
-    out += ["\n**Aspect level 1**\n", md_table([{"aspect_l1": k, "pairs": int(v)} for k, v in l1.items()])]
-    ct = pd.crosstab(p["aspect_l2"], p["split"]).reindex(columns=list(SPLITS), fill_value=0)
+    l1 = p["fiqa_aspect_l1"].value_counts()
+    out += ["\n**FiQA's original aspect taxonomy, level 1**\n",
+            md_table([{"fiqa_aspect_l1": k, "pairs": int(v)} for k, v in l1.items()])]
+    ct = pd.crosstab(p["fiqa_aspect_l2"], p["split"]).reindex(columns=list(SPLITS), fill_value=0)
     out.append(
-        f"\n{ct.shape[0]} level-2 aspects after normalization; "
+        f"\n{ct.shape[0]} original level-2 aspects after normalization; "
         f"{int((ct['train'] == 0).sum())} never appear in train, "
         f"{int((ct['train'] < 5).sum())} have fewer than 5 train examples.\n"
     )
-    out += ["\n**Aspect level 2 × split**\n", md_table(
-        [{"aspect_l2": k, **{s: int(ct.loc[k, s]) for s in SPLITS}} for k in ct.sum(axis=1).sort_values(ascending=False).index]
+    out += ["\n**FiQA original aspect level 2 × split**\n", md_table(
+        [{"fiqa_aspect_l2": k, **{s: int(ct.loc[k, s]) for s in SPLITS}} for k in ct.sum(axis=1).sort_values(ascending=False).index]
     )]
     by_type = p.groupby("text_type")["polarity"].value_counts(normalize=True).unstack().reindex(columns=list(LABELS), fill_value=0)
     out += ["\n**Polarity by text type**\n", md_table(
         [{"text_type": t, **{lab: _pct(by_type.loc[t, lab]) for lab in LABELS}} for t in by_type.index]
     )]
+    return "\n".join(out)
+
+
+def aspect_section(pairs: pd.DataFrame) -> str:
+    """Coverage and distribution of the unified aspect labels, and a check of the
+    LLM labels against FiQA's gold aspects where those map unambiguously."""
+    from .review import agreement
+    from .taxonomy import LABELS as ASPECTS, map_fiqa_aspect
+
+    src = pairs["aspect_source"].fillna("unlabelled").map(lambda s: s.split("@")[0])
+    rows = []
+    for (source, split), d in pairs.groupby(["source", "split"], sort=False):
+        c = src[d.index].value_counts()
+        rows.append({"source": source, "split": split, "pairs": len(d),
+                     "labelled": _pct(d["aspect"].notna().mean()),
+                     **{k: int(v) for k, v in c.items()}})
+    cols = sorted({k for r in rows for k in r} - {"source", "split", "pairs", "labelled"})
+    rows = [{**{k: r[k] for k in ("source", "split", "pairs", "labelled")}, **{c: r.get(c, 0) for c in cols}} for r in rows]
+    out = ["Taxonomy and rules: [`ASPECT_GUIDELINES.md`](ASPECT_GUIDELINES.md). "
+           "Agreement with human labels: [`aspect_label_quality.md`](aspect_label_quality.md).\n",
+           "\n**Coverage**\n", md_table(rows)]
+    lab = pairs[pairs["aspect"].notna()]
+    if lab.empty:
+        return "\n".join(out)
+    ct = pd.crosstab(lab["aspect"], lab["source"]).reindex(index=[a for a in ASPECTS if a in set(lab["aspect"])])
+    out += ["\n**Distribution (labelled pairs)**\n", md_table(
+        [{"aspect": a, **{s: f"{int(ct.loc[a, s])} ({_pct(ct.loc[a, s] / ct[s].sum())})" for s in ct.columns}}
+         for a in ct.index])]
+    conf = lab["aspect_confidence"].value_counts()
+    if len(conf):
+        out.append("\nLLM confidence: " + ", ".join(f"{k} {int(v)}" for k, v in conf.items()) + "\n")
+    fq = lab[(lab["source"] == "fiqa") & lab["aspect_source"].str.startswith("llm")].copy()
+    if len(fq):
+        fq["gold"] = fq["fiqa_aspect"].map(map_fiqa_aspect)
+        fq = fq[fq["gold"].notna()]
+        out += [f"\n**LLM vs FiQA gold** (FiQA aspects mapped where unambiguous: {len(fq)} pairs; "
+                "FiQA's own labels are noisy, so this is a lower bound)\n",
+                agreement(fq["gold"], fq["aspect"], fq["aspect_confidence"], "FiQA gold", "LLM")]
     return "\n".join(out)
 
 
@@ -160,6 +199,7 @@ def build_report(pairs: pd.DataFrame, issues: pd.DataFrame, meta: dict) -> str:
                   "\n### Trivial baselines on test\n", baselines(p)]
         if source == "fiqa":
             parts += ["\n### FiQA specifics\n", fiqa_section(p)]
+    parts += ["\n## Unified aspect categories\n", aspect_section(pairs)]
     if pairs["source"].nunique() == 2:
         parts += ["\n## Cross-dataset domain shift\n",
                   cross_section(pairs[pairs["source"] == "sentfin"], pairs[pairs["source"] == "fiqa"])]

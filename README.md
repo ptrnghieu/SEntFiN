@@ -56,6 +56,8 @@ Useful options:
 | `*/sentences_{split}.jsonl` | one text per line, all targets with char spans | span / joint extraction + polarity models |
 | `*/instruct_atsc_{split}.jsonl` | chat `messages` with targets given and a JSON answer | LLM SFT (LoRA etc.) |
 | `sentfin/instruct_e2e_{split}.jsonl` | chat `messages`; the model must also find the entities | end-to-end LLM SFT |
+| `*/instruct_aspect_{split}.jsonl` | chat `messages`; targets given, answer = aspect category + sentiment per target | aspect-category sentiment (ACSA) SFT |
+| `sentfin/instruct_e2e_aspect_{split}.jsonl` | chat `messages`; answer = (target, aspect, sentiment) triplets | end-to-end ABSA SFT |
 | `issues.csv` | every repair, drop and flag, with the raw id | auditing |
 
 Labels: `negative=0, neutral=1, positive=2`.
@@ -64,6 +66,56 @@ FiQA's 3-class label follows FinBen: `negative < -0.1 ≤ neutral < 0.1 ≤ posi
 reproduces all FinBen labels; the raw `score` is kept.
 
 Never commit `data/`: it contains FiQA text, which may only be obtained through the gate.
+
+### Aspect categories (silver labels from an LLM, verified by hand)
+
+Only FiQA has aspect labels, and its taxonomy fits SEntFiN poorly: SEntFiN is dominated by indices,
+regulators, commodities and currencies, which FiQA barely covers. So both datasets are labelled in
+one **unified taxonomy** of 21 categories under Corporate / Stock / Market / Economy / Other.
+`absa_data/taxonomy.py` is the single source of truth; it generates
+[`reports/ASPECT_GUIDELINES.md`](reports/ASPECT_GUIDELINES.md).
+
+1. **LLM labels.** The OpenAI Responses API is called with a strict JSON schema; the default model is
+   `gpt-6-luna`.
+
+   ```bash
+   export OPENAI_API_KEY=...
+   ```
+
+   ```bash
+   python -m absa_data annotate --source fiqa
+   ```
+
+   ```bash
+   python -m absa_data annotate --source sentfin
+   ```
+
+   * Labels are appended to `annotations/llm/<source>_<model>.jsonl` (committed).
+   * Runs are resumable: re-running only labels pairs that are missing or that were labelled with an
+     older prompt version.
+   * Token usage per run goes to `*.usage.jsonl`.
+   * `--dry-run` prints the prompt without calling the API.
+   * `--limit N`, `--splits`, `--text-ids FILE` restrict the run.
+2. **Human check.** `annotations/review/sentfin_test_review_v1.xlsx` holds 400 random SEntFiN *test*
+   headlines (538 pairs).
+   * It is blind: the LLM's label is not shown.
+   * It has a dropdown of the categories and a guidelines sheet.
+   * Fill the yellow `aspect` column, then run:
+
+   ```bash
+   python -m absa_data review-eval
+   ```
+
+   This writes `reports/aspect_label_quality.md` (accuracy, Cohen's kappa, per-category scores,
+   confusions). It also stores your labels as gold in `annotations/human/`; they override the LLM's
+   labels in the build.
+3. **Build.** `python -m absa_data build` attaches the labels:
+   * `aspect`, `aspect_l1`;
+   * `aspect_source`: `human` or `llm:<model>@<prompt version>`;
+   * `aspect_confidence`.
+
+   It also writes the aspect exports, and the profile compares the LLM labels with FiQA's own gold
+   aspects where those map unambiguously. FiQA's original labels stay in `fiqa_aspect*`.
 
 ### Splits
 
@@ -80,8 +132,9 @@ Never commit `data/`: it contains FiQA text, which may only be obtained through 
 ### Unified schema (`absa_data/schema.py`)
 
 `uid, source, text_id, split, text_type, text, text_raw, target, target_raw, start, end,
-span_match, polarity, label, score, aspect, aspect_l1, aspect_l2, entity_id, n_targets, is_mixed,
-group_id, entity_seen_in_train, quality_flags`
+span_match, polarity, label, score, aspect, aspect_l1, aspect_source, aspect_confidence,
+fiqa_aspect, fiqa_aspect_l1, fiqa_aspect_l2, entity_id, n_targets, is_mixed, group_id,
+entity_seen_in_train, quality_flags`
 
 * `span_match`: `exact | case_insensitive | substring | fuzzy | not_found`.
 * `entity_seen_in_train`: the entity occurs in the training split of the same source. Use it to
@@ -101,10 +154,14 @@ group_id, entity_seen_in_train, quality_flags`
 | `absa_data/fiqa.py` | FiQA download (pinned revision), cleaning, score → label |
 | `absa_data/text.py` | encoding repair, near-duplicate keys, target-span alignment |
 | `absa_data/entities.py` | alias table → canonical entity ids |
+| `absa_data/taxonomy.py` | unified aspect taxonomy, rules, examples, FiQA mapping |
+| `absa_data/annotate.py` | LLM aspect labelling (batched, strict JSON, resumable) |
+| `absa_data/review.py` | blind review sheet, agreement metrics |
+| `absa_data/aspects.py` | attach LLM and human aspect labels to the pairs |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
 | `absa_data/profile.py` | `reports/data_profile.md` |
-| `absa_data/cli.py` | `python -m absa_data build` |
+| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval` |
 
 ### Citations
 

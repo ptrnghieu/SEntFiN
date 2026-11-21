@@ -25,9 +25,13 @@ PAIR_COLUMNS = [
     "polarity",         # negative | neutral | positive
     "label",            # LABEL2ID[polarity]
     "score",            # FiQA continuous score in [-1, 1]
-    "aspect",           # FiQA aspect path, normalized (e.g. Stock/Price Action/Bullish)
-    "aspect_l1",        # first level of the aspect path (Stock, Corporate, ...)
-    "aspect_l2",        # first two levels (Stock/Price Action, ...)
+    "aspect",           # unified aspect category (taxonomy.py), e.g. Corporate/Financial Results
+    "aspect_l1",        # its first level: Corporate | Stock | Market | Economy | Other
+    "aspect_source",    # "human" | "llm:<model>@<prompt version>" | None (not labelled yet)
+    "aspect_confidence",  # LLM self-reported confidence: high | medium | low
+    "fiqa_aspect",      # FiQA's original gold aspect path, normalized (FiQA only)
+    "fiqa_aspect_l1",   # its first level (Stock, Corporate, Market, Economy)
+    "fiqa_aspect_l2",   # its first two levels (Stock/Price Action, ...)
     "entity_id",        # canonical entity key used for seen/unseen analysis
     "n_targets",        # number of annotated targets in this text
     "is_mixed",         # text has targets with different polarities

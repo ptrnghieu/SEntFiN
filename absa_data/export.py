@@ -12,6 +12,12 @@ For each dataset directory (``sentfin/``, ``fiqa/``, ``combined/``):
 * ``instruct_e2e_{split}.jsonl`` (SEntFiN only): model must find the entities
   as well. Not produced for FiQA, whose annotations do not cover every entity
   in a sentence.
+* ``instruct_aspect_{split}.jsonl``: targets given, model returns aspect
+  category + sentiment per target (aspect-category sentiment analysis).
+* ``instruct_e2e_aspect_{split}.jsonl`` (SEntFiN only): full (target, aspect,
+  sentiment) triplet extraction.
+
+The two aspect tasks only contain texts whose targets all have an aspect label.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 
 from .schema import PAIR_COLUMNS, SPLITS
+from .taxonomy import LABELS as ASPECT_LABELS
 
 SYSTEM_PROMPT = "You are a financial analyst who labels the sentiment of financial news and posts."
 _KIND = {"headline": "headline", "post": "social media post"}
@@ -62,8 +69,10 @@ def _grouped(df: pd.DataFrame):
 
 
 _PAIR_FIELDS = ("uid", "source", "text_id", "text_type", "text", "target", "start", "end",
-                "polarity", "label", "score", "aspect", "aspect_l2", "entity_seen_in_train", "quality_flags")
-_TARGET_FIELDS = ("target", "start", "end", "polarity", "score", "aspect")
+                "polarity", "label", "score", "aspect", "aspect_l1", "aspect_source", "aspect_confidence",
+                "fiqa_aspect", "entity_seen_in_train", "quality_flags")
+_TARGET_FIELDS = ("target", "start", "end", "polarity", "aspect", "aspect_source", "score", "fiqa_aspect")
+_ASPECT_LIST = "\n".join(f"- {a}" for a in ASPECT_LABELS)
 
 
 def pair_records(df: pd.DataFrame):
@@ -82,26 +91,39 @@ def sentence_records(df: pd.DataFrame):
 
 
 def instruct_records(df: pd.DataFrame, task: str):
+    with_aspect = task in ("aspect", "e2e_aspect")
     for text_id, rs in _grouped(df):
+        if with_aspect and any(r["aspect"] is None for r in rs):
+            continue
         first = rs[0]
         kind = _KIND.get(first["text_type"], "text")
-        answer = json.dumps([{"target": r["target"], "sentiment": r["polarity"]} for r in rs], ensure_ascii=False)
+        text = f"Text: {first['text']}\n"
+        targets = f"Targets: {json.dumps([r['target'] for r in rs], ensure_ascii=False)}\n\n"
+        if with_aspect:
+            answer = [{"target": r["target"], "aspect": r["aspect"], "sentiment": r["polarity"]} for r in rs]
+        else:
+            answer = [{"target": r["target"], "sentiment": r["polarity"]} for r in rs]
         if task == "atsc":
-            user = (
-                f"Classify the sentiment expressed towards each target in the financial {kind} below "
-                "as positive, negative or neutral.\n\n"
-                f"Text: {first['text']}\n"
-                f"Targets: {json.dumps([r['target'] for r in rs], ensure_ascii=False)}\n\n"
-                'Answer with a JSON list of objects with keys "target" and "sentiment".'
-            )
+            user = (f"Classify the sentiment expressed towards each target in the financial {kind} below "
+                    "as positive, negative or neutral.\n\n" + text + targets +
+                    'Answer with a JSON list of objects with keys "target" and "sentiment".')
         elif task == "e2e":
-            user = (
-                f"List every financial entity (company, index, commodity, currency, sector, regulator, ...) "
-                f"mentioned in the {kind} below and the sentiment expressed towards it "
-                "(positive, negative or neutral).\n\n"
-                f"Text: {first['text']}\n\n"
-                'Answer with a JSON list of objects with keys "target" and "sentiment", in order of appearance.'
-            )
+            user = ("List every financial entity (company, index, commodity, currency, sector, regulator, ...) "
+                    f"mentioned in the {kind} below and the sentiment expressed towards it "
+                    "(positive, negative or neutral).\n\n" + text + "\n" +
+                    'Answer with a JSON list of objects with keys "target" and "sentiment", in order of appearance.')
+        elif task == "aspect":
+            user = (f"For each target in the financial {kind} below, give the aspect category the text "
+                    "discusses about it and the sentiment expressed towards it (positive, negative or "
+                    f"neutral).\n\nAspect categories:\n{_ASPECT_LIST}\n\n" + text + targets +
+                    'Answer with a JSON list of objects with keys "target", "aspect" and "sentiment".')
+        elif task == "e2e_aspect":
+            user = ("List every financial entity (company, index, commodity, currency, sector, regulator, ...) "
+                    f"mentioned in the {kind} below, the aspect category the text discusses about it and the "
+                    "sentiment expressed towards it (positive, negative or neutral).\n\n"
+                    f"Aspect categories:\n{_ASPECT_LIST}\n\n" + text + "\n" +
+                    'Answer with a JSON list of objects with keys "target", "aspect" and "sentiment", '
+                    "in order of appearance.")
         else:
             raise ValueError(task)
         yield {
@@ -109,7 +131,7 @@ def instruct_records(df: pd.DataFrame, task: str):
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user},
-                {"role": "assistant", "content": answer},
+                {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)},
             ],
         }
 
@@ -126,6 +148,9 @@ def export_dataset(pairs: pd.DataFrame, out_dir: str | Path, e2e: bool) -> dict[
         counts[f"pairs_{split}"] = _write_jsonl(pair_records(part), out / f"pairs_{split}.jsonl")
         counts[f"sentences_{split}"] = _write_jsonl(sentence_records(part), out / f"sentences_{split}.jsonl")
         counts[f"instruct_atsc_{split}"] = _write_jsonl(instruct_records(part, "atsc"), out / f"instruct_atsc_{split}.jsonl")
-        if e2e:
-            counts[f"instruct_e2e_{split}"] = _write_jsonl(instruct_records(part, "e2e"), out / f"instruct_e2e_{split}.jsonl")
+        tasks = ["e2e"] if e2e else []
+        if pairs["aspect"].notna().any():
+            tasks += ["aspect"] + (["e2e_aspect"] if e2e else [])
+        for task in tasks:
+            counts[f"instruct_{task}_{split}"] = _write_jsonl(instruct_records(part, task), out / f"instruct_{task}_{split}.jsonl")
     return counts

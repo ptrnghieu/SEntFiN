@@ -71,7 +71,8 @@ def _toy_pairs():
         "uid": ["t1#0", "t1#1"], "source": "sentfin", "text_id": "t1", "text_type": "headline",
         "text": "Gold shines; Silver dull", "target": ["Silver", "Gold"],
         "start": pd.array([13, 0], dtype="Int64"), "end": pd.array([19, 4], dtype="Int64"),
-        "polarity": ["negative", "positive"], "score": float("nan"), "aspect": None,
+        "polarity": ["negative", "positive"], "score": float("nan"),
+        "aspect": ["Market/Commodities", None], "aspect_source": ["human", None], "fiqa_aspect": None,
     })
 
 
