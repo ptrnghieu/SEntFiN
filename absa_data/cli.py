@@ -5,6 +5,7 @@ Commands:
   annotate      label aspect categories with an LLM (OpenAI), resumable
   review-sheet  write a blind spreadsheet of SEntFiN test pairs for human aspect labels
   review-eval   compare filled review sheet with the LLM labels; store human labels as gold
+  calibrate     fit FiQA score thresholds to SEntFiN's label semantics (bridge LLM)
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from .splits import (apply_manifest, assign_groups, check_no_leakage, mark_entit
 
 GUIDELINES_PATH = Path("reports/ASPECT_GUIDELINES.md")
 QUALITY_REPORT_PATH = Path("reports/aspect_label_quality.md")
+CALIBRATION_REPORT_PATH = Path("reports/sentiment_label_calibration.md")
 REVIEW_SHEET_PATH = Path("annotations/review/sentfin_test_review_v1.xlsx")
 HUMAN_LABELS_PATH = Path("annotations/human/sentfin_test_v1.csv")
 
@@ -101,7 +103,26 @@ def build(args) -> None:
     from .profile import build_report
     from .taxonomy import TAXONOMY_VERSION, guidelines_markdown
 
+    from .calibration import (DEFAULT_FIQA_SIGMA, DEFAULT_SENTFIN_FLIP_RATE, FINBEN_THRESHOLDS, add_soft_labels,
+                              load_calibration, relabel_fiqa)
+
     pairs, issues, meta = load_pairs(args)
+
+    # Sentiment: one meaning of negative/neutral/positive across sources + soft labels.
+    cal = load_calibration(Path(args.annotations_dir) / "calibration" / "fiqa_thresholds.json")
+    if args.fiqa_thresholds == "calibrated" and cal is None:
+        print("[warn] no annotations/calibration/fiqa_thresholds.json; using FinBen thresholds", file=sys.stderr)
+    use_cal = args.fiqa_thresholds == "calibrated" and cal is not None
+    neg_below, pos_from = (cal["neg_below"], cal["pos_from"]) if use_cal else FINBEN_THRESHOLDS
+    sigma = args.fiqa_sigma if args.fiqa_sigma is not None else (cal or {}).get("fiqa_score_sigma", DEFAULT_FIQA_SIGMA)
+    flip = (args.sentfin_flip_rate if args.sentfin_flip_rate is not None
+            else (cal or {}).get("sentfin_flip_rate", DEFAULT_SENTFIN_FLIP_RATE))
+    pairs = add_soft_labels(relabel_fiqa(pairs, neg_below, pos_from), sigma, flip, neg_below, pos_from)
+    meta["FiQA score -> label"] = (f"negative < {neg_below} <= neutral < {pos_from} <= positive "
+                                   f"({'calibrated to SEntFiN, see sentiment_label_calibration.md' if use_cal else 'FinBen'}); "
+                                   "FinBen class kept in polarity_finben")
+    meta["soft labels"] = f"FiQA: Normal(score, sigma={sigma}) around the thresholds; SEntFiN: ordinal smoothing, flip rate {flip}"
+
     llm_files, human_files = label_files(Path(args.annotations_dir))
     pairs, info = attach_aspects(pairs, llm_files, human_files)
     if info["target_mismatch"]:
@@ -144,8 +165,21 @@ def _select_text_ids(path: str) -> set[str]:
     return set(df["text_id"].astype(str))
 
 
+def _task(name: str):
+    from .annotate import ASPECT_TASK
+    from .calibration import SENTIMENT_TASK
+
+    return {"aspect": ASPECT_TASK, "sentiment": SENTIMENT_TASK}[name]
+
+
+def _label_path(args, source: str) -> Path:
+    if args.task == "sentiment":  # bridge labels for calibration only, never training labels
+        return Path(f"{args.annotations_dir}/calibration/{source}_{args.model}_sentiment.jsonl")
+    return Path(f"{args.annotations_dir}/llm/{source}_{args.model}.jsonl")
+
+
 def annotate(args) -> None:
-    from .annotate import PROMPT_VERSION, Annotator, INSTRUCTIONS, make_client, make_items, render_batch
+    from .annotate import Annotator, make_client, make_items, render_batch
 
     pairs, _, _ = load_pairs(args)
     pairs = pairs[pairs["source"] == args.source]
@@ -155,14 +189,16 @@ def annotate(args) -> None:
         pairs = pairs[pairs["text_id"].isin(_select_text_ids(args.text_ids))]
     if pairs.empty:
         sys.exit(f"no {args.source} pairs selected (is the source loaded?)")
-    out = Path(args.out or f"{args.annotations_dir}/llm/{args.source}_{args.model}.jsonl")
-    print(f"{args.source}: {pairs['text_id'].nunique()} texts / {len(pairs)} pairs selected; "
-          f"model {args.model}, prompt {PROMPT_VERSION}, output {out}")
+    task = _task(args.task)
+    out = Path(args.out) if args.out else _label_path(args, args.source)
+    print(f"{args.source}: {pairs['text_id'].nunique()} texts / {len(pairs)} pairs selected; task {task.name}, "
+          f"model {args.model}, prompt {task.version}, output {out}")
     if args.dry_run:
         prompt, _ = render_batch(make_items(pairs)[: args.batch_size])
-        print(f"--- instructions ({len(INSTRUCTIONS)} chars) ---\n{INSTRUCTIONS}\n--- first batch input ---\n{prompt}")
+        print(f"--- instructions ({len(task.instructions)} chars) ---\n{task.instructions}\n"
+              f"--- first batch input ---\n{prompt}")
         return
-    annotator = Annotator(make_client(), model=args.model, reasoning_effort=args.reasoning_effort)
+    annotator = Annotator(make_client(), model=args.model, reasoning_effort=args.reasoning_effort, task=task)
     stats = annotator.run(pairs, out, batch_size=args.batch_size, workers=args.workers, limit_texts=args.limit)
     print(json.dumps({k: v for k, v in stats.items() if k != "errors"}, indent=1))
     for e in stats["errors"]:
@@ -199,6 +235,113 @@ def review_eval(args) -> None:
     print(f"\nhuman labels: {len(review)} -> {HUMAN_LABELS_PATH}; report -> {QUALITY_REPORT_PATH}")
 
 
+def _bridge_check(df: pd.DataFrame) -> str:
+    from sklearn.metrics import cohen_kappa_score, f1_score
+
+    from .profile import md_table
+    from .schema import LABELS
+
+    y, yhat = df["polarity"], df["sentiment"]
+    acc = (y == yhat).mean()
+    ci = 1.96 * (acc * (1 - acc) / len(y)) ** 0.5
+    head = md_table([{"pairs": len(y), "accuracy": f"{acc:.3f} ± {ci:.3f}",
+                      "macro-F1": f"{f1_score(y, yhat, labels=list(LABELS), average='macro'):.3f}",
+                      "Cohen's kappa": f"{cohen_kappa_score(y, yhat):.3f}"}])
+    by_conf = md_table([{"LLM confidence": c, "pairs": int((df["confidence"] == c).sum()),
+                         "accuracy": f"{(y[df['confidence'] == c] == yhat[df['confidence'] == c]).mean():.3f}"}
+                        for c in ("high", "medium", "low") if (df["confidence"] == c).any()])
+    cm = pd.crosstab(y, yhat).reindex(index=list(LABELS), columns=list(LABELS), fill_value=0)
+    conf = md_table([{"gold \\ LLM": g, **{l: int(cm.loc[g, l]) for l in LABELS}} for g in LABELS])
+    return f"{head}\n{by_conf}\n**Confusion (rows: SEntFiN gold)**\n\n{conf}"
+
+
+def calibrate(args) -> None:
+    """Fit FiQA score thresholds to SEntFiN's label semantics via the bridge annotator."""
+    from .annotate import latest_labels
+    from .calibration import (SENTIMENT_EXAMPLES, SENTIMENT_TASK, apply_thresholds, bootstrap_thresholds,
+                              choose_thresholds, estimate_score_sigma, fit_thresholds, sentfin_duplicate_agreement)
+    from .profile import md_table
+    from .schema import LABELS
+
+    args.task = "sentiment"
+    pairs, _, _ = load_pairs(args)
+    v = SENTIMENT_TASK.version
+
+    def joined(source):
+        lab = latest_labels(_label_path(args, source), v)
+        if lab.empty:
+            sys.exit(f"no sentiment labels for {source}: run `annotate --task sentiment --source {source}` first")
+        lab = lab[lab["prompt_version"] == v]
+        return pairs[pairs["source"] == source].merge(lab[["uid", "sentiment", "confidence"]], on="uid")
+
+    sf, fq = joined("sentfin"), joined("fiqa")
+    sf_eval = sf[sf["split"] != "test"]  # never touch SEntFiN test
+    dist = lambda x: {l: f"{(x == l).mean():.1%}" for l in LABELS}  # noqa: E731
+    finben = apply_thresholds(fq["score"], -0.1, 0.1)
+    fit = fit_thresholds(fq["score"], fq["sentiment"])
+    ci = bootstrap_thresholds(fq["score"], fq["sentiment"])
+    chosen = choose_thresholds(fit, ci)
+    calibrated = apply_thresholds(fq["score"], chosen["neg_below"], chosen["pos_from"])
+    chosen_acc = float((calibrated == fq["sentiment"]).mean())
+    sigma = estimate_score_sigma(pairs[pairs["source"] == "fiqa"])
+    dup = sentfin_duplicate_agreement(args.sentfin_csv)
+
+    result = {"neg_below": chosen["neg_below"], "pos_from": chosen["pos_from"],
+              "fitted": {"neg_below": fit["neg_below"], "pos_from": fit["pos_from"]}, **ci,
+              "fit_accuracy": fit["accuracy"], "chosen_accuracy": round(chosen_acc, 4),
+              "fiqa_pairs": fit["n"], "bridge": f"llm:{args.model}@{v}",
+              "bridge_vs_sentfin_accuracy": round(float((sf_eval["sentiment"] == sf_eval["polarity"]).mean()), 4),
+              "fiqa_score_sigma": sigma["sigma"], "sentfin_flip_rate": dup["flip_rate"]}
+    out = Path(args.annotations_dir) / "calibration" / "fiqa_thresholds.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=1) + "\n")
+
+    rows = [{"labels": "SEntFiN gold (valid)", **dist(sf_eval["polarity"])},
+            {"labels": "bridge LLM on SEntFiN (valid)", **dist(sf_eval["sentiment"])},
+            {"labels": "FiQA, FinBen thresholds ±0.1", **dist(finben)},
+            {"labels": f"FiQA, calibrated [{chosen['neg_below']}, {chosen['pos_from']})", **dist(calibrated)},
+            {"labels": "bridge LLM on FiQA", **dist(fq["sentiment"])}]
+    by_llm = fq.groupby("sentiment")["score"].describe()[["count", "25%", "50%", "75%"]].round(3)
+    report = "\n".join([
+        "# Calibrating FiQA's score thresholds to SEntFiN's labels\n",
+        "_Generated by `python -m absa_data calibrate`._\n",
+        "SEntFiN gives hard classes; FiQA gives scores in [-1, 1] that are cut into classes at thresholds. "
+        "The FinBen thresholds (±0.1) make only 7.8 % of FiQA neutral against 38 % of SEntFiN, so the two "
+        "datasets' \"neutral\" mean different things. An LLM taught SEntFiN's conventions with "
+        f"{len(SENTIMENT_EXAMPLES)} SEntFiN *train* examples "
+        "is used as a bridge annotator: its agreement with SEntFiN gold is checked on SEntFiN *valid*, then the "
+        "FiQA thresholds that best reproduce its FiQA judgements are fitted. FiQA labels are still computed from "
+        "the human scores.\n",
+        f"## 1. Does the bridge annotator reproduce SEntFiN? (valid, {len(sf_eval)} pairs)\n",
+        _bridge_check(sf_eval),
+        "\n## 2. Label distributions\n", md_table(rows),
+        "\n## 3. FiQA score by bridge label\n",
+        md_table([{"bridge label": k, "pairs": int(r["count"]), "score q25": r["25%"], "median": r["50%"],
+                   "q75": r["75%"]} for k, r in by_llm.iterrows()]),
+        "\n## 4. Thresholds\n",
+        md_table([
+            {"thresholds": "FinBen", "neg_below": -0.1, "pos_from": 0.1,
+             "agreement with bridge": f"{(finben == fq['sentiment']).mean():.1%}"},
+            {"thresholds": "best fit", "neg_below": fit["neg_below"], "pos_from": fit["pos_from"],
+             "agreement with bridge": f"{fit['accuracy']:.1%}"},
+            {"thresholds": "**chosen**", "neg_below": f"**{chosen['neg_below']}**",
+             "pos_from": f"**{chosen['pos_from']}**", "agreement with bridge": f"{chosen_acc:.1%}"},
+        ]),
+        f"\nBootstrap 95 % intervals of the best fit: neg_below {ci['neg_below_95ci']}, pos_from "
+        f"{ci['pos_from_95ci']}. Rule: a FinBen threshold is kept unless its interval excludes it (the "
+        "agreement surface is flat over wide ranges, so a marginally better point estimate is not evidence). "
+        "The build uses the chosen thresholds for `polarity` / `label` and the soft labels.\n",
+        "## 5. Label noise estimates (for soft labels)\n",
+        f"* FiQA score noise σ ≈ **{sigma['sigma']}** from {sigma['groups']} (text, target) pairs scored more than "
+        f"once ({sigma['differences']} differences: {sigma['scores']}). Very small sample.",
+        f"* SEntFiN: {dup['compared']} repeated judgements in duplicated headlines, {dup['conflicts']} disagree "
+        f"({dup['by_pair']}) → per-label flip rate ≈ **{dup['flip_rate']}** (half the disagreement rate).",
+        f"\nSaved to `{out}`.\n",
+    ])
+    CALIBRATION_REPORT_PATH.write_text(report, encoding="utf-8")
+    print(report)
+
+
 def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sentfin-csv", default="SEntFiN.csv")
     p.add_argument("--entity-list", default="entity_list_comprehensive.csv")
@@ -221,12 +364,20 @@ def main(argv=None) -> None:
     b = sub.add_parser("build", help="clean, split, attach aspects, export and profile the datasets")
     _data_args(b)
     b.add_argument("--resplit", action="store_true", help="ignore the manifest and draw a new SEntFiN split")
+    b.add_argument("--fiqa-thresholds", choices=["calibrated", "finben"], default="calibrated",
+                   help="how FiQA scores become classes in `polarity`: thresholds fitted to SEntFiN's semantics "
+                        "(annotations/calibration/fiqa_thresholds.json) or FinBen's ±0.1")
+    b.add_argument("--fiqa-sigma", type=float, help="score noise for FiQA soft labels (default: calibration file)")
+    b.add_argument("--sentfin-flip-rate", type=float,
+                   help="adjacent-class flip rate for SEntFiN soft labels (default: calibration file; 0 = one-hot)")
     b.add_argument("--out", default="data/processed")
     b.add_argument("--report", default="reports/data_profile.md")
 
     a = sub.add_parser("annotate", help="label aspect categories with an LLM")
     _data_args(a)
     a.add_argument("--source", choices=["sentfin", "fiqa"], required=True)
+    a.add_argument("--task", choices=["aspect", "sentiment"], default="aspect",
+                   help="sentiment = bridge labels for `calibrate` (stored under annotations/calibration/)")
     a.add_argument("--splits", nargs="+", choices=["train", "valid", "test"])
     a.add_argument("--text-ids", help="CSV/XLSX with a text_id column (e.g. the review sheet) to restrict to")
     a.add_argument("--model", default=DEFAULT_MODEL)
@@ -234,7 +385,8 @@ def main(argv=None) -> None:
     a.add_argument("--batch-size", type=int, default=10, help="texts per request")
     a.add_argument("--workers", type=int, default=4, help="parallel requests")
     a.add_argument("--limit", type=int, help="label at most this many (not yet labelled) texts")
-    a.add_argument("--out", help="default: <annotations-dir>/llm/<source>_<model>.jsonl")
+    a.add_argument("--out", help="default: <annotations-dir>/llm/<source>_<model>.jsonl "
+                                 "(sentiment: <annotations-dir>/calibration/<source>_<model>_sentiment.jsonl)")
     a.add_argument("--dry-run", action="store_true", help="print the prompt, call nothing")
 
     r = sub.add_parser("review-sheet", help="write a blind review spreadsheet of SEntFiN test pairs")
@@ -250,10 +402,15 @@ def main(argv=None) -> None:
     e.add_argument("--model", default=DEFAULT_MODEL)
     e.add_argument("--llm-labels", help="default: <annotations-dir>/llm/sentfin_<model>.jsonl")
 
+    c = sub.add_parser("calibrate", help="fit FiQA score thresholds to SEntFiN's label semantics")
+    _data_args(c)
+    c.add_argument("--model", default=DEFAULT_MODEL)
+
     args = ap.parse_args(argv)
     if getattr(args, "reasoning_effort", None) == "":
         args.reasoning_effort = None
-    {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval}[args.cmd](args)
+    {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval,
+     "calibrate": calibrate}[args.cmd](args)
 
 
 if __name__ == "__main__":

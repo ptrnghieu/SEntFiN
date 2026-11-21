@@ -1,0 +1,23 @@
+{
+ "neg_below": -0.1,
+ "pos_from": 0.24,
+ "fitted": {
+  "neg_below": -0.01,
+  "pos_from": 0.24
+ },
+ "neg_below_95ci": [
+  -0.14,
+  0.0
+ ],
+ "pos_from_95ci": [
+  0.16,
+  0.28
+ ],
+ "fit_accuracy": 0.7843,
+ "chosen_accuracy": 0.7826,
+ "fiqa_pairs": 1173,
+ "bridge": "llm:gpt-6-luna@s1-712b7e41",
+ "bridge_vs_sentfin_accuracy": 0.8394,
+ "fiqa_score_sigma": 0.083,
+ "sentfin_flip_rate": 0.0437
+}

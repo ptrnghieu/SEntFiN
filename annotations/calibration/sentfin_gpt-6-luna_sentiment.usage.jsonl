@@ -1,0 +1,1 @@
+{"task": "sentiment", "model": "gpt-6-luna", "prompt_version": "s1-712b7e41", "reasoning_effort": "low", "already_done": 0, "batches": 107, "pairs_labelled": 1432, "pairs_failed": 0, "input_tokens": 126628, "cached_input_tokens": 0, "output_tokens": 36851, "reasoning_tokens": 4377, "invalid_outputs": 0, "seconds": 54.3, "errors": [], "finished_at": "2026-11-21T15:13:13+00:00"}

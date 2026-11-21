@@ -22,9 +22,15 @@ PAIR_COLUMNS = [
     "start",            # char offset of target in `text` (None if not found)
     "end",              # exclusive end offset (None if not found)
     "span_match",       # exact | case_insensitive | substring | fuzzy | not_found
-    "polarity",         # negative | neutral | positive
+    "polarity",         # negative | neutral | positive (FiQA: score cut at the thresholds used by the build)
     "label",            # LABEL2ID[polarity]
     "score",            # FiQA continuous score in [-1, 1]
+    "polarity_finben",  # FiQA only: class under FinBen's thresholds (±0.1), for comparison with published results
+    "label_type",       # "hard" (SEntFiN: annotated class) | "soft" (FiQA: derived from a noisy score)
+    "p_negative",       # soft label: P(negative); see calibration.py for the noise models
+    "p_neutral",        # soft label: P(neutral)
+    "p_positive",       # soft label: P(positive)
+    "label_confidence",  # max of the three probabilities
     "aspect",           # unified aspect category (taxonomy.py), e.g. Corporate/Financial Results
     "aspect_l1",        # its first level: Corporate | Stock | Market | Economy | Other
     "aspect_source",    # "human" | "llm:<model>@<prompt version>" | None (not labelled yet)

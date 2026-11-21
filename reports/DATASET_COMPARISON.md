@@ -26,23 +26,77 @@ labels. Add FiQA train for US/UK news and tweets. Report aspect results on the h
 test subset. Results on silver test labels only say how well a model imitates the LLM.
 
 ## Side by side
-## Side by side
 
 | | SEntFiN 1.0 | FiQA 2018 Task 1 (`TheFinAI/en-fiqa-absa`) |
 |---|---|---|
 | Texts / (text, target) pairs | **10,679 / 14,318** | 1,111 / 1,173 |
 | Text | Indian financial news headlines | 436 UK/US headlines + 675 StockTwits posts |
 | Annotation | entity → negative / neutral / positive | target → score in [-1, 1] + aspect category path |
-| 3-class labels | annotated by humans | derived from the score (FinBen rule: neg < -0.1 ≤ neu < 0.1 ≤ pos) |
-| Label mix neg / neu / pos | 26.5 / 38.2 / 35.3 % | 30.9 / **7.8** / 61.3 % |
+| 3-class labels | annotated by humans (**hard**) | derived from a noisy score (**soft**). Here: neg < -0.1 ≤ neu < **0.24** ≤ pos, calibrated to SEntFiN; FinBen's ±0.1 kept in `polarity_finben` |
+| Label mix neg / neu / pos | 26.5 / 38.2 / 35.3 % | 30.9 / 19.2 / 49.9 % (FinBen: 30.9 / **7.8** / 61.3 %) |
+| Label noise (estimated) | 7 of 80 repeated judgements disagree, all negative ↔ neutral | score noise σ ≈ 0.08, as wide as FinBen's neutral band |
 | Texts with >1 target | **2,836 (26.6 %)** | 57 (5.1 %) |
 | Texts whose targets disagree in polarity | **1,228 (11.5 %)** | 11 (1.0 %); **0 in test** |
 | Official split | none (this repo ships a frozen, leakage-safe 80/10/10) | 822 / 117 / 234 pairs |
 | Test pairs / 95 % CI on an accuracy near 80 % | 1,433 / ±2.1 pp | 234 / ±5.1 pp |
-| Neutral pairs in test | 547 | **12** (±28 pp on that class) |
+| Neutral pairs in test | 547 | 42 (FinBen: **12**, ±28 pp on that class) |
 | Aspect categories (original) | none | 4 top-level, 28 second-level (3 never in train, 5 with < 5 train examples) |
 | Aspect categories (this repo) | silver, 21 unified categories; human gold on 400 test headlines once reviewed | silver, same 21 categories |
 | Access | MIT, in this repo | MIT, gated (access form, cite FinBen) |
+
+## Hard vs soft sentiment labels
+
+**The problem.** SEntFiN gives a class; FiQA gives a score in [-1, 1] that has to be cut into
+classes. Three findings ([`sentiment_label_calibration.md`](sentiment_label_calibration.md)):
+
+1. **FiQA labels near a threshold are close to coin flips.** Tweets that appear twice were scored
+   with noise σ ≈ 0.08, about as wide as FinBen's neutral band (±0.1). 201 pairs (17 %) lie within
+   0.1 of a FinBen threshold. The estimate rests on only 4 repeated pairs.
+2. **SEntFiN's hard labels are fairly stable.** 73 of 80 repeated judgements in duplicated
+   headlines agree, and all 7 disagreements are negative ↔ neutral. That is a flip rate of about
+   4 % per label, only ever to an adjacent class.
+3. **"Neutral" means different things.**
+   * Under FinBen's thresholds, 7.8 % of FiQA is neutral, against 38 % of SEntFiN.
+   * An LLM taught SEntFiN's conventions (21 SEntFiN *train* examples) reproduces SEntFiN gold on
+     *valid* with 83.9 % ± 1.9 accuracy (κ 0.76). It calls 22.9 % of FiQA neutral.
+   * The FiQA pairs it calls neutral have a **median score of +0.20**, not 0: FiQA's scale is
+     shifted positive.
+
+**What the build does**
+
+* **One meaning of negative / neutral / positive across sources.**
+  * FiQA scores are cut at **neg < −0.1 ≤ neu < 0.24 ≤ pos**.
+  * The positive cut-off moved: the best fit is 0.24, with a bootstrap 95 % interval
+    [0.16, 0.28] that excludes FinBen's 0.1.
+  * The negative cut-off stays at FinBen's −0.1, because the fit is flat from −0.12 to 0.
+  * In effect, 134 mildly positive FiQA pairs (scores 0.10–0.24) become neutral.
+  * FinBen's classes stay in `polarity_finben` for comparison with published FiQA results.
+* **Soft labels for every pair.** `label_type` says hard / soft. `p_negative`, `p_neutral`,
+  `p_positive` are the soft label (`soft_label` in the JSONL files), and `label_confidence` is
+  their maximum.
+  * FiQA: the probability of each class if the true score is Normal(score, σ = 0.083), cut at
+    the thresholds above. A score of 0.22 → [0.00, 0.57, 0.42]; 0.6 → [0, 0, 1].
+  * SEntFiN: ordinal smoothing with the measured flip rate (4.4 %), moved only to adjacent
+    classes. Neutral → [0.02, 0.96, 0.02]; positive → [0, 0.04, 0.96].
+  * Options: `--sentfin-flip-rate 0` gives SEntFiN one-hot labels, and
+    `--fiqa-thresholds finben` keeps FinBen's cut.
+
+**How to train with them**
+
+* **Encoder classifiers:** use cross-entropy against `soft_label` (identical to ordinary CE for
+  one-hot rows), so one loss covers both sources:
+
+  ```python
+  loss = -(soft_label * torch.log_softmax(logits, dim=-1)).sum(-1).mean()
+  ```
+
+  Optionally add a regression head on `score`, masked to FiQA rows.
+* **LLM SFT** (text answers, so hard labels): every instruct record carries `label_confidence`
+  (lowest among its targets). Use it to weight the loss, or drop records below a cut-off.
+  A cut-off of 0.8 removes the 216 FiQA pairs closest to a threshold; SEntFiN rows (0.956) are
+  never affected.
+* **Evaluation:** use hard `polarity` (SEntFiN gold, calibrated FiQA). For numbers comparable
+  with FiQA papers, also report FiQA test on `polarity_finben`, or regression metrics on `score`.
 
 ## Silver aspect labels: how they were made and how good they are
 
@@ -95,9 +149,10 @@ test subset. Results on silver test labels only say how well a model imitates th
    different entities get different polarities ("Gold shines on seasonal demand; Silver dull").
    FiQA's test split has no such sentence, and 98 % of its test sentences have a single target.
    A model that ignores the target entirely therefore loses almost nothing on FiQA test.
-3. **Its labels are balanced and its neutral class is real.** FiQA's neutral class is 7.8 % of
-   the data and only 12 test pairs. Its macro-F1 therefore swings by several points with
-   2–3 predictions.
+3. **Its labels are balanced and annotated directly.** FiQA's classes come from cutting a noisy
+   score. Its neutral class is 7.8 % under FinBen's thresholds (12 test pairs) and 19 % after
+   calibration (42 test pairs). Macro-F1 on FiQA test still swings by several points with a
+   handful of predictions.
 4. **Its test numbers are about 2.5 times more precise** (±2.1 pp against ±5.1 pp).
 
 ## SEntFiN caveats to design around
@@ -120,9 +175,9 @@ test subset. Results on silver test labels only say how well a model imitates th
 
 * **As an out-of-domain test.** Report headlines and posts separately; posts are far noisier
   (cashtags, URLs, slang).
-* **For multi-source training, keep `source` and evaluate per source.** The label semantics
-  differ: FiQA "neutral" only means |score| < 0.1, while SEntFiN "neutral" is an annotator's
-  judgement. A source tag in the input is a cheap way to let the model learn the difference.
+* **For multi-source training, keep `source` and evaluate per source.** The calibrated thresholds
+  and soft labels (above) bring the label meanings closer, but FiQA posts are still a different
+  genre. A source tag in the input lets the model learn the remaining difference.
 * **For aspect categories,** collapse to the 4 top-level classes or the frequent second-level
   ones. The tail has too few examples to learn.
 * **⚠ Benchmark leak.** FinBen's sentence-level FiQA-SA task (`ChanceFocus/flare-fiqasa`) contains
@@ -168,13 +223,16 @@ test subset. Results on silver test labels only say how well a model imitates th
 
 ## Suggested protocol
 
-1. Fine-tune on `data/processed/sentfin/*_train`, select on `*_valid`. For aspect + sentiment, use
+1. Fine-tune on `data/processed/sentfin/*_train` (or `combined/`), select on `*_valid`. Train
+   encoders against `soft_label`; weight or filter LLM SFT records by `label_confidence`.
+   For aspect + sentiment, use
    `instruct_aspect_*` / `instruct_e2e_aspect_*` (LLM SFT), or `pairs_*` with the `aspect` column
    (encoder with two heads).
 2. Report accuracy and macro-F1 on:
    * SEntFiN test: all pairs, unseen-entity pairs, and pairs in multi-target or mixed-polarity
      headlines (`n_targets > 1`, `is_mixed`);
-   * FiQA test, as out-of-domain, split into headlines and posts;
+   * FiQA test, as out-of-domain, split into headlines and posts. Also report it on
+     `polarity_finben` when comparing with published FiQA numbers;
    * for aspects: the human-verified SEntFiN test subset (gold) first. Silver test labels are
      secondary, and FiQA's original gold aspects (`fiqa_aspect`) can serve as an extra check.
 3. Optional: add FiQA train (the `combined/` export), then measure the in-domain gain on FiQA

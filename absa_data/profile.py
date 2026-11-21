@@ -112,6 +112,28 @@ def fiqa_section(p: pd.DataFrame) -> str:
     return "\n".join(out)
 
 
+def sentiment_label_section(pairs: pd.DataFrame) -> str:
+    """Hard vs soft sentiment labels after harmonization."""
+    rows = []
+    for source, d in pairs.groupby("source", sort=False):
+        rows.append({"source": source, "label type": ", ".join(sorted(d["label_type"].unique())),
+                     "pairs": len(d),
+                     "hard neutral share": _pct(d["polarity"].eq("neutral").mean()),
+                     "soft neutral mass": _pct(d["p_neutral"].mean()),
+                     "mean confidence": f"{d['label_confidence'].mean():.3f}",
+                     "pairs with confidence < 0.8": int((d["label_confidence"] < 0.8).sum())})
+    out = ["Details and evidence: [`sentiment_label_calibration.md`](sentiment_label_calibration.md).\n",
+           md_table(rows)]
+    fq = pairs[pairs["source"] == "fiqa"]
+    if len(fq) and fq["polarity_finben"].notna().any():
+        ct = pd.crosstab(fq["polarity_finben"], fq["polarity"]).reindex(index=list(LABELS), columns=list(LABELS),
+                                                                         fill_value=0)
+        out += [f"\n**FiQA: FinBen class (rows) vs `polarity` used here (columns)** — "
+                f"{int((fq['polarity_finben'] != fq['polarity']).sum())} pairs differ\n",
+                md_table([{"FinBen": r, **{c: int(ct.loc[r, c]) for c in LABELS}} for r in LABELS])]
+    return "\n".join(out)
+
+
 def aspect_section(pairs: pd.DataFrame) -> str:
     """Coverage and distribution of the unified aspect labels, and a check of the
     LLM labels against FiQA's gold aspects where those map unambiguously."""
@@ -199,6 +221,8 @@ def build_report(pairs: pd.DataFrame, issues: pd.DataFrame, meta: dict) -> str:
                   "\n### Trivial baselines on test\n", baselines(p)]
         if source == "fiqa":
             parts += ["\n### FiQA specifics\n", fiqa_section(p)]
+    if "label_type" in pairs:
+        parts += ["\n## Sentiment labels: hard (SEntFiN) vs soft (FiQA)\n", sentiment_label_section(pairs)]
     parts += ["\n## Unified aspect categories\n", aspect_section(pairs)]
     if pairs["source"].nunique() == 2:
         parts += ["\n## Cross-dataset domain shift\n",

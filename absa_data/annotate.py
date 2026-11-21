@@ -1,7 +1,9 @@
-"""Silver aspect labels from an LLM (OpenAI Responses API, strict JSON output).
+"""Labels from an LLM (OpenAI Responses API, strict JSON output).
 
-Each (text, target) pair gets one category of ``taxonomy.LABELS`` plus a
-self-reported confidence. Results are appended to a JSONL file, one line per
+The default task gives each (text, target) pair one aspect category of
+``taxonomy.LABELS`` plus a self-reported confidence. Other tasks (e.g. the
+sentiment task used to calibrate FiQA's thresholds, see ``calibration.py``) reuse
+the same machinery with their own instructions, label set and version. Results are appended to a JSONL file, one line per
 pair, so an interrupted run resumes where it stopped and nothing paid for is
 lost. A label is reused only if it was produced by the same model and the same
 prompt version (a hash of the instructions and schema): editing the taxonomy
@@ -82,6 +84,38 @@ PROMPT_VERSION = f"{TAXONOMY_VERSION}-" + hashlib.sha1(
 ).hexdigest()[:8]
 
 
+@dataclass(frozen=True)
+class LabelTask:
+    """What to ask for: the output field, its allowed values, the prompt and its version."""
+    name: str
+    field: str
+    labels: tuple[str, ...]
+    instructions: str
+    schema: dict
+    version: str
+
+
+def make_schema(field: str, labels) -> dict:
+    """Response schema with `field` restricted to `labels` (same layout as the aspect schema)."""
+    schema = response_schema()
+    item = schema["properties"]["labels"]["items"]
+    item["properties"] = {"key": {"type": "string"}, "target": {"type": "string"},
+                          field: {"type": "string", "enum": list(labels)},
+                          "confidence": {"type": "string", "enum": list(CONFIDENCE)}}
+    item["required"] = ["key", "target", field, "confidence"]
+    return schema
+
+
+def make_task(name: str, field: str, labels, instructions: str, version_prefix: str) -> LabelTask:
+    schema = make_schema(field, labels)
+    version = f"{version_prefix}-" + hashlib.sha1(
+        (instructions + json.dumps(schema, sort_keys=True)).encode()).hexdigest()[:8]
+    return LabelTask(name, field, tuple(labels), instructions, schema, version)
+
+
+ASPECT_TASK = LabelTask("aspect", "aspect", LABELS, INSTRUCTIONS, response_schema(), PROMPT_VERSION)
+
+
 @dataclass
 class Item:
     """One text and the pairs (uid, target) to label in it."""
@@ -115,7 +149,7 @@ def _same_target(a: str, b: str) -> bool:
     return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
 
 
-def parse_output(output_text: str, keys) -> dict[str, tuple[str, str]]:
+def parse_output(output_text: str, keys, field: str = "aspect", labels=LABELS) -> dict[str, tuple[str, str]]:
     """Validate the model's JSON; returns key -> (aspect, confidence). Raises ValueError.
 
     The echoed target must match the target of its key: this catches the model
@@ -124,13 +158,13 @@ def parse_output(output_text: str, keys) -> dict[str, tuple[str, str]]:
     data = json.loads(output_text)
     got: dict[str, tuple[str, str]] = {}
     for lab in data["labels"]:
-        if lab["aspect"] not in LABELS or lab["confidence"] not in CONFIDENCE:
+        if lab[field] not in labels or lab["confidence"] not in CONFIDENCE:
             raise ValueError(f"invalid label {lab}")
         if lab["key"] in got:
             raise ValueError(f"duplicate key {lab['key']}")
         if lab["key"] in keys and not _same_target(lab["target"], keys[lab["key"]][2]):
             raise ValueError(f"misaligned: key {lab['key']} echoed {lab['target']!r}, expected {keys[lab['key']][2]!r}")
-        got[lab["key"]] = (lab["aspect"], lab["confidence"])
+        got[lab["key"]] = (lab[field], lab["confidence"])
     missing = set(keys) - set(got)
     if missing:
         raise ValueError(f"missing keys {sorted(missing)[:5]}")
@@ -153,7 +187,8 @@ def _usage(resp) -> dict[str, int]:
 
 class Annotator:
     def __init__(self, client, model: str = DEFAULT_MODEL, reasoning_effort: str | None = None,
-                 max_attempts: int = 3):
+                 max_attempts: int = 3, task: LabelTask = ASPECT_TASK):
+        self.task = task
         self.client = client
         self.model = model
         self.reasoning_effort = reasoning_effort
@@ -162,11 +197,11 @@ class Annotator:
     def _request(self, prompt: str):
         kwargs = dict(
             model=self.model,
-            instructions=INSTRUCTIONS,
+            instructions=self.task.instructions,
             input=prompt,
             store=False,
-            text={"format": {"type": "json_schema", "name": "aspect_labels",
-                             "schema": response_schema(), "strict": True}},
+            text={"format": {"type": "json_schema", "name": f"{self.task.name}_labels",
+                             "schema": self.task.schema, "strict": True}},
         )
         if self.reasoning_effort:
             kwargs["reasoning"] = {"effort": self.reasoning_effort}
@@ -186,7 +221,7 @@ class Annotator:
             for k, v in _usage(resp).items():
                 usage[k] = usage.get(k, 0) + v
             try:
-                labels = parse_output(resp.output_text, keys)
+                labels = parse_output(resp.output_text, keys, self.task.field, self.task.labels)
                 break
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
                 error = e
@@ -204,8 +239,8 @@ class Annotator:
                     usage[k] = usage.get(k, 0) + v
             return records, usage, failed
         records = [
-            {"uid": uid, "text_id": text_id, "target": target, "aspect": labels[key][0],
-             "confidence": labels[key][1], "model": self.model, "prompt_version": PROMPT_VERSION,
+            {"uid": uid, "text_id": text_id, "target": target, self.task.field: labels[key][0],
+             "confidence": labels[key][1], "model": self.model, "prompt_version": self.task.version,
              "reasoning_effort": self.reasoning_effort}
             for key, (uid, text_id, target) in keys.items()
         ]
@@ -215,12 +250,13 @@ class Annotator:
             limit_texts: int | None = None, log=print) -> dict:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        done = done_uids(out_path, self.model, PROMPT_VERSION, self.reasoning_effort)
+        done = done_uids(out_path, self.model, self.task.version, self.reasoning_effort)
         items = make_items(pairs[~pairs["uid"].isin(done)])
         if limit_texts is not None:
             items = items[:limit_texts]
         batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
-        stats = {"model": self.model, "prompt_version": PROMPT_VERSION, "reasoning_effort": self.reasoning_effort,
+        stats = {"task": self.task.name, "model": self.model, "prompt_version": self.task.version,
+                 "reasoning_effort": self.reasoning_effort,
                  "already_done": len(done), "batches": len(batches), "pairs_labelled": 0, "pairs_failed": 0,
                  "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0,
                  "invalid_outputs": 0}
@@ -274,13 +310,14 @@ def done_uids(path: str | Path, model: str, prompt_version: str, reasoning_effor
     return set(df.loc[(df["model"] == model) & (df["prompt_version"] == prompt_version) & same_effort, "uid"])
 
 
-def latest_labels(path: str | Path) -> pd.DataFrame:
+def latest_labels(path: str | Path, current_version: str | None = None) -> pd.DataFrame:
     """One row per uid: the last label written for the current prompt version, if any,
     else the last label of any version (so stale labels are visible but marked)."""
     df = read_labels(path)
     if df.empty:
         return df
-    df = df.assign(_current=df["prompt_version"] == PROMPT_VERSION, _order=range(len(df)))
+    current_version = current_version or PROMPT_VERSION
+    df = df.assign(_current=df["prompt_version"] == current_version, _order=range(len(df)))
     df = df.sort_values(["_current", "_order"]).drop_duplicates("uid", keep="last")
     return df.drop(columns=["_current", "_order"]).sort_values("uid").reset_index(drop=True)
 

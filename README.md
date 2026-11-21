@@ -52,7 +52,7 @@ Useful options:
 | path | content | use it for |
 |---|---|---|
 | `{sentfin,fiqa,combined}/pairs.parquet` / `.csv` | full unified table, all splits | analysis, custom formats |
-| `*/pairs_{split}.jsonl` | one (text, target) per line, with `label` 0/1/2 | BERT/FinBERT/DeBERTa sentence-pair or target-marked classification |
+| `*/pairs_{split}.jsonl` | one (text, target) per line, with `label` 0/1/2 and `soft_label` | BERT/FinBERT/DeBERTa sentence-pair or target-marked classification |
 | `*/sentences_{split}.jsonl` | one text per line, all targets with char spans | span / joint extraction + polarity models |
 | `*/instruct_atsc_{split}.jsonl` | chat `messages` with targets given and a JSON answer | LLM SFT (LoRA etc.) |
 | `sentfin/instruct_e2e_{split}.jsonl` | chat `messages`; the model must also find the entities | end-to-end LLM SFT |
@@ -62,8 +62,12 @@ Useful options:
 
 Labels: `negative=0, neutral=1, positive=2`.
 
-FiQA's 3-class label follows FinBen: `negative < -0.1 ≤ neutral < 0.1 ≤ positive`. This rule
-reproduces all FinBen labels; the raw `score` is kept.
+Sentiment labels are harmonized across the two sources:
+* SEntFiN's classes are **hard**; FiQA's come from a noisy **score**.
+* FiQA scores are cut at `negative < -0.1 ≤ neutral < 0.24 ≤ positive`, a cut calibrated to
+  SEntFiN's notion of neutral (see below). FinBen's ±0.1 cut is kept in `polarity_finben`, and the
+  raw `score` is kept too.
+* Every pair also gets a soft label, `soft_label` = [P(neg), P(neu), P(pos)].
 
 Never commit `data/`: it contains FiQA text, which may only be obtained through the gate.
 
@@ -117,6 +121,35 @@ one **unified taxonomy** of 21 categories under Corporate / Stock / Market / Eco
    It also writes the aspect exports, and the profile compares the LLM labels with FiQA's own gold
    aspects where those map unambiguously. FiQA's original labels stay in `fiqa_aspect*`.
 
+### Sentiment labels: hard (SEntFiN) vs soft (FiQA)
+
+Evidence and numbers: [`reports/sentiment_label_calibration.md`](reports/sentiment_label_calibration.md).
+Summary and training recipes: the "Hard vs soft sentiment labels" section of
+[`reports/DATASET_COMPARISON.md`](reports/DATASET_COMPARISON.md).
+
+* **Calibration.** An LLM taught SEntFiN's conventions acts as a bridge annotator: it scores
+  83.9 % against SEntFiN gold on valid, and labels FiQA, which places FiQA's neutral/positive cut
+  at 0.24 instead of 0.1. FiQA labels are still computed from the human scores. To re-run it:
+
+  ```bash
+  python -m absa_data annotate --task sentiment --source sentfin --splits valid
+  ```
+
+  ```bash
+  python -m absa_data annotate --task sentiment --source fiqa
+  ```
+
+  ```bash
+  python -m absa_data calibrate
+  ```
+
+  This writes `annotations/calibration/fiqa_thresholds.json`, which the build reads.
+* **Soft labels** (`p_negative`, `p_neutral`, `p_positive`, `label_confidence`, `label_type`):
+  * FiQA: Normal(score, σ) around the thresholds, with σ ≈ 0.08 estimated from re-scored tweets.
+  * SEntFiN: ordinal smoothing with the flip rate measured on duplicate headlines (≈ 4 %).
+  * Build options: `--fiqa-thresholds {calibrated,finben}`, `--fiqa-sigma`,
+    `--sentfin-flip-rate` (0 = one-hot).
+
 ### Splits
 
 * **FiQA:** the official train/valid/test splits.
@@ -132,7 +165,8 @@ one **unified taxonomy** of 21 categories under Corporate / Stock / Market / Eco
 ### Unified schema (`absa_data/schema.py`)
 
 `uid, source, text_id, split, text_type, text, text_raw, target, target_raw, start, end,
-span_match, polarity, label, score, aspect, aspect_l1, aspect_source, aspect_confidence,
+span_match, polarity, label, score, polarity_finben, label_type, p_negative, p_neutral, p_positive,
+label_confidence, aspect, aspect_l1, aspect_source, aspect_confidence,
 fiqa_aspect, fiqa_aspect_l1, fiqa_aspect_l2, entity_id, n_targets, is_mixed, group_id,
 entity_seen_in_train, quality_flags`
 
@@ -158,10 +192,11 @@ entity_seen_in_train, quality_flags`
 | `absa_data/annotate.py` | LLM aspect labelling (batched, strict JSON, resumable) |
 | `absa_data/review.py` | blind review sheet, agreement metrics |
 | `absa_data/aspects.py` | attach LLM and human aspect labels to the pairs |
+| `absa_data/calibration.py` | soft sentiment labels, noise estimates, FiQA threshold calibration |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
 | `absa_data/profile.py` | `reports/data_profile.md` |
-| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval` |
+| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval / calibrate` |
 
 ### Citations
 

@@ -4,7 +4,8 @@ For each dataset directory (``sentfin/``, ``fiqa/``, ``combined/``):
 
 * ``pairs.parquet`` / ``pairs.csv``: the full unified table, all splits.
 * ``pairs_{split}.jsonl``: one (text, target) per line, for encoder models
-  (BERT/FinBERT/DeBERTa sentence-pair or target-marked classification).
+  (BERT/FinBERT/DeBERTa sentence-pair or target-marked classification), with
+  the hard ``label`` and the ``soft_label`` [P(neg), P(neu), P(pos)].
 * ``sentences_{split}.jsonl``: one text per line with all its targets and
   character spans, for span/joint models (target extraction + polarity).
 * ``instruct_atsc_{split}.jsonl``: chat-format examples for LLM fine-tuning,
@@ -69,14 +70,24 @@ def _grouped(df: pd.DataFrame):
 
 
 _PAIR_FIELDS = ("uid", "source", "text_id", "text_type", "text", "target", "start", "end",
-                "polarity", "label", "score", "aspect", "aspect_l1", "aspect_source", "aspect_confidence",
+                "polarity", "label", "label_type", "p_negative", "p_neutral", "p_positive", "label_confidence",
+                "score", "polarity_finben", "aspect", "aspect_l1", "aspect_source", "aspect_confidence",
                 "fiqa_aspect", "entity_seen_in_train", "quality_flags")
-_TARGET_FIELDS = ("target", "start", "end", "polarity", "aspect", "aspect_source", "score", "fiqa_aspect")
+_TARGET_FIELDS = ("target", "start", "end", "polarity", "label_type", "p_negative", "p_neutral", "p_positive",
+                  "aspect", "aspect_source", "score", "polarity_finben", "fiqa_aspect")
+
+
+def _pack_soft(r: dict) -> dict:
+    """p_negative/p_neutral/p_positive -> soft_label: [neg, neu, pos] (same order as `label`)."""
+    if "p_negative" in r:
+        r["soft_label"] = [r.pop("p_negative"), r.pop("p_neutral"), r.pop("p_positive")]
+    return r
 _ASPECT_LIST = "\n".join(f"- {a}" for a in ASPECT_LABELS)
 
 
 def pair_records(df: pd.DataFrame):
-    yield from _records(df[list(_PAIR_FIELDS)])
+    for r in _records(df[[c for c in _PAIR_FIELDS if c in df]]):
+        yield _pack_soft(r)
 
 
 def sentence_records(df: pd.DataFrame):
@@ -86,7 +97,7 @@ def sentence_records(df: pd.DataFrame):
             "source": rs[0]["source"],
             "text_type": rs[0]["text_type"],
             "text": rs[0]["text"],
-            "targets": [{k: r[k] for k in _TARGET_FIELDS} for r in rs],
+            "targets": [_pack_soft({k: r[k] for k in _TARGET_FIELDS if k in r}) for r in rs],
         }
 
 
@@ -126,8 +137,12 @@ def instruct_records(df: pd.DataFrame, task: str):
                     "in order of appearance.")
         else:
             raise ValueError(task)
+        conf = [r.get("label_confidence") for r in rs if r.get("label_confidence") is not None]
         yield {
             "id": text_id,
+            # Lowest sentiment-label confidence among the targets: SFT trainers ignore it; use it to
+            # weight or filter ambiguous (mostly near-threshold FiQA) examples.
+            "label_confidence": min(conf) if conf else None,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user},

@@ -152,15 +152,18 @@ def test_reasoning_effort_is_part_of_the_cache_key(tmp_path):
     assert ann.latest_labels(out)["reasoning_effort"].tolist() == ["medium"]
 
 
-def test_prompt_change_invalidates_cache(tmp_path, monkeypatch):
+def test_prompt_change_invalidates_cache(tmp_path):
+    from dataclasses import replace
+
     out = tmp_path / "labels.jsonl"
     pairs = _pairs([("text", ["A"])])
     client = FakeClient(label_all)
     ann.Annotator(client, model="m").run(pairs, out, log=lambda *_: None)
-    monkeypatch.setattr(ann, "PROMPT_VERSION", "v1-changed")
-    ann.Annotator(client, model="m").run(pairs, out, log=lambda *_: None)
+    changed = replace(ann.ASPECT_TASK, version="v1-changed")
+    ann.Annotator(client, model="m", task=changed).run(pairs, out, log=lambda *_: None)
     assert len(client.calls) == 2
-    assert ann.latest_labels(out)["prompt_version"].tolist() == ["v1-changed"]
+    assert ann.latest_labels(out, "v1-changed")["prompt_version"].tolist() == ["v1-changed"]
+    assert ann.latest_labels(out)["prompt_version"].tolist() == [ann.PROMPT_VERSION]
 
 
 def test_bad_output_is_isolated_by_splitting_the_batch(tmp_path):
