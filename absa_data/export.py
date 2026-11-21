@@ -1,0 +1,131 @@
+"""Write the unified tables in the formats the usual fine-tuning setups expect.
+
+For each dataset directory (``sentfin/``, ``fiqa/``, ``combined/``):
+
+* ``pairs.parquet`` / ``pairs.csv``: the full unified table, all splits.
+* ``pairs_{split}.jsonl``: one (text, target) per line, for encoder models
+  (BERT/FinBERT/DeBERTa sentence-pair or target-marked classification).
+* ``sentences_{split}.jsonl``: one text per line with all its targets and
+  character spans, for span/joint models (target extraction + polarity).
+* ``instruct_atsc_{split}.jsonl``: chat-format examples for LLM fine-tuning,
+  targets given, model returns a polarity per target.
+* ``instruct_e2e_{split}.jsonl`` (SEntFiN only): model must find the entities
+  as well. Not produced for FiQA, whose annotations do not cover every entity
+  in a sentence.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import pandas as pd
+
+from .schema import PAIR_COLUMNS, SPLITS
+
+SYSTEM_PROMPT = "You are a financial analyst who labels the sentiment of financial news and posts."
+_KIND = {"headline": "headline", "post": "social media post"}
+
+
+def _clean(v):
+    if v is None or v is pd.NA or (isinstance(v, float) and math.isnan(v)):
+        return None
+    if hasattr(v, "item"):  # numpy scalar
+        return v.item()
+    return v
+
+
+def _write_jsonl(records, path: Path) -> int:
+    n = 0
+    with path.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            n += 1
+    return n
+
+
+def _records(df: pd.DataFrame) -> list[dict]:
+    cols = list(df.columns)
+    return [dict(zip(cols, map(_clean, row))) for row in df.itertuples(index=False, name=None)]
+
+
+def _grouped(df: pd.DataFrame):
+    """Yield (text_id, pairs) in order of first appearance; pairs ordered by position in
+    the text, targets without a span last (stable, so annotation order breaks ties)."""
+    groups: dict[str, list[dict]] = {}
+    for r in _records(df):
+        groups.setdefault(r["text_id"], []).append(r)
+    for text_id, rs in groups.items():
+        rs.sort(key=lambda r: (r["start"] is None, r["start"] or 0))
+        yield text_id, rs
+
+
+_PAIR_FIELDS = ("uid", "source", "text_id", "text_type", "text", "target", "start", "end",
+                "polarity", "label", "score", "aspect", "aspect_l2", "entity_seen_in_train", "quality_flags")
+_TARGET_FIELDS = ("target", "start", "end", "polarity", "score", "aspect")
+
+
+def pair_records(df: pd.DataFrame):
+    yield from _records(df[list(_PAIR_FIELDS)])
+
+
+def sentence_records(df: pd.DataFrame):
+    for text_id, rs in _grouped(df):
+        yield {
+            "text_id": text_id,
+            "source": rs[0]["source"],
+            "text_type": rs[0]["text_type"],
+            "text": rs[0]["text"],
+            "targets": [{k: r[k] for k in _TARGET_FIELDS} for r in rs],
+        }
+
+
+def instruct_records(df: pd.DataFrame, task: str):
+    for text_id, rs in _grouped(df):
+        first = rs[0]
+        kind = _KIND.get(first["text_type"], "text")
+        answer = json.dumps([{"target": r["target"], "sentiment": r["polarity"]} for r in rs], ensure_ascii=False)
+        if task == "atsc":
+            user = (
+                f"Classify the sentiment expressed towards each target in the financial {kind} below "
+                "as positive, negative or neutral.\n\n"
+                f"Text: {first['text']}\n"
+                f"Targets: {json.dumps([r['target'] for r in rs], ensure_ascii=False)}\n\n"
+                'Answer with a JSON list of objects with keys "target" and "sentiment".'
+            )
+        elif task == "e2e":
+            user = (
+                f"List every financial entity (company, index, commodity, currency, sector, regulator, ...) "
+                f"mentioned in the {kind} below and the sentiment expressed towards it "
+                "(positive, negative or neutral).\n\n"
+                f"Text: {first['text']}\n\n"
+                'Answer with a JSON list of objects with keys "target" and "sentiment", in order of appearance.'
+            )
+        else:
+            raise ValueError(task)
+        yield {
+            "id": text_id,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": answer},
+            ],
+        }
+
+
+def export_dataset(pairs: pd.DataFrame, out_dir: str | Path, e2e: bool) -> dict[str, int]:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    pairs = pairs[PAIR_COLUMNS]
+    pairs.to_parquet(out / "pairs.parquet", index=False)
+    pairs.to_csv(out / "pairs.csv", index=False)
+    counts = {}
+    for split in SPLITS:
+        part = pairs[pairs["split"] == split]
+        counts[f"pairs_{split}"] = _write_jsonl(pair_records(part), out / f"pairs_{split}.jsonl")
+        counts[f"sentences_{split}"] = _write_jsonl(sentence_records(part), out / f"sentences_{split}.jsonl")
+        counts[f"instruct_atsc_{split}"] = _write_jsonl(instruct_records(part, "atsc"), out / f"instruct_atsc_{split}.jsonl")
+        if e2e:
+            counts[f"instruct_e2e_{split}"] = _write_jsonl(instruct_records(part, "e2e"), out / f"instruct_e2e_{split}.jsonl")
+    return counts
