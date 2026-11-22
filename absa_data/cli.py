@@ -6,6 +6,7 @@ Commands:
   review-sheet  write a blind spreadsheet of SEntFiN test pairs for human aspect labels
   review-eval   compare filled review sheet with the LLM labels; store human labels as gold
   calibrate     fit FiQA score thresholds to SEntFiN's label semantics (bridge LLM)
+  push-hub      publish data/processed to a Hugging Face dataset repo (gated if it holds FiQA)
 """
 
 from __future__ import annotations
@@ -342,6 +343,44 @@ def calibrate(args) -> None:
     print(report)
 
 
+def _code_url() -> str:
+    """GitHub URL of the current commit (the code that produced the data), if available."""
+    import subprocess
+
+    try:
+        remote = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True,
+                                check=True).stdout.strip().removesuffix(".git")
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "absa_data"], capture_output=True,
+                               text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "(not recorded)"
+    if dirty:
+        print("[warn] absa_data/ has uncommitted changes; the card links to the last commit", file=sys.stderr)
+    return f"{remote}/tree/{sha}" if remote.startswith("https://github.com/") else f"commit {sha}"
+
+
+def push_hub(args) -> None:
+    from .hub import push, write_staging
+
+    processed = Path(args.processed)
+    if not (processed / "sentfin" / "pairs.parquet").exists():
+        sys.exit(f"{processed} has no build output: run `python -m absa_data build` first")
+    staging = write_staging(processed, Path("reports"), Path(args.staging), args.repo, _code_url(),
+                            Path(args.annotations_dir) / "calibration" / "fiqa_thresholds.json")
+    has_fiqa = (staging / "fiqa").exists()
+    print(f"staged -> {staging} ({'with' if has_fiqa else 'without'} FiQA)")
+    if args.dry_run:
+        return
+    gated = None if args.gated == "none" else args.gated
+    if has_fiqa and gated is None and not args.private:
+        sys.exit("refusing to publish FiQA data publicly without a gate (FiQA is gated by TheFinAI); "
+                 "use --gated auto|manual or --private")
+    result = push(staging, args.repo, gated=gated, public=not args.private,
+                  commit_message=args.message or "Update processed SEntFiN + FiQA data")
+    print(json.dumps(result, indent=1))
+
+
 def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sentfin-csv", default="SEntFiN.csv")
     p.add_argument("--entity-list", default="entity_list_comprehensive.csv")
@@ -406,11 +445,21 @@ def main(argv=None) -> None:
     _data_args(c)
     c.add_argument("--model", default=DEFAULT_MODEL)
 
+    h = sub.add_parser("push-hub", help="publish data/processed to a Hugging Face dataset repo")
+    h.add_argument("--repo", required=True, help="<user>/<name>")
+    h.add_argument("--processed", default="data/processed")
+    h.add_argument("--staging", default="data/hub_staging")
+    h.add_argument("--annotations-dir", default="annotations")
+    h.add_argument("--gated", choices=["auto", "manual", "none"], default="auto")
+    h.add_argument("--private", action="store_true", help="keep the repo private")
+    h.add_argument("--message", help="commit message on the Hub")
+    h.add_argument("--dry-run", action="store_true", help="stage files and card only; upload nothing")
+
     args = ap.parse_args(argv)
     if getattr(args, "reasoning_effort", None) == "":
         args.reasoning_effort = None
     {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval,
-     "calibrate": calibrate}[args.cmd](args)
+     "calibrate": calibrate, "push-hub": push_hub}[args.cmd](args)
 
 
 if __name__ == "__main__":

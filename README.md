@@ -150,6 +150,18 @@ Summary and training recipes: the "Hard vs soft sentiment labels" section of
   * Build options: `--fiqa-thresholds {calibrated,finben}`, `--fiqa-sigma`,
     `--sentfin-flip-rate` (0 = one-hot).
 
+### Publishing to the Hugging Face Hub
+
+```bash
+python -m absa_data push-hub --repo <user>/<name>
+```
+
+* The command stages `data/processed` as one config per dataset × format, with splits
+  `train / validation / test`, and writes a dataset card generated from the data.
+* If FiQA is included, the repo is created private, uploaded, **gated** with a form that restates
+  FiQA's terms (cite FinBen), and only then made public. It refuses to publish FiQA ungated.
+* `--private` keeps the repo private; `--dry-run` only stages the files under `data/hub_staging/`.
+
 ### Splits
 
 * **FiQA:** the official train/valid/test splits.
@@ -193,10 +205,11 @@ entity_seen_in_train, quality_flags`
 | `absa_data/review.py` | blind review sheet, agreement metrics |
 | `absa_data/aspects.py` | attach LLM and human aspect labels to the pairs |
 | `absa_data/calibration.py` | soft sentiment labels, noise estimates, FiQA threshold calibration |
+| `absa_data/hub.py` | Hugging Face Hub staging, dataset card, gated upload |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
 | `absa_data/profile.py` | `reports/data_profile.md` |
-| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval / calibrate` |
+| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval / calibrate / push-hub` |
 
 ### Citations
 
