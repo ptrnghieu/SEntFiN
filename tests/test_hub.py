@@ -36,6 +36,29 @@ def test_stage_layout_and_configs(tmp_path):
             assert (tmp_path / "staging" / d["path"]).exists()
     assert len(pd.read_parquet(tmp_path / "staging" / "sentfin/pairs/validation.parquet")) == 2
     assert (tmp_path / "staging" / "docs" / "issues.csv").exists()
+    # One file format for the whole repo, and one schema per config across its splits.
+    import pyarrow.parquet as pq
+    for c in configs:
+        paths = [tmp_path / "staging" / d["path"] for d in c["data_files"]]
+        assert all(p.suffix == ".parquet" for p in paths)
+        schemas = [pq.read_schema(p) for p in paths]
+        assert all(sc.equals(schemas[0]) for sc in schemas)
+
+
+def test_jsonl_configs_keep_nested_fields_and_null_columns(tmp_path):
+    root = _processed(tmp_path, with_fiqa=False)
+    recs = {"train": [{"id": "a", "label_confidence": 0.9, "messages": [{"role": "user", "content": "x"}],
+                       "extra": None}],
+            "valid": [{"id": "b", "label_confidence": None, "messages": [{"role": "user", "content": "y"}],
+                       "extra": "s"}],
+            "test": [{"id": "c", "label_confidence": 0.5, "messages": [], "extra": None}]}
+    for split, rs in recs.items():
+        (root / "sentfin" / f"instruct_atsc_{split}.jsonl").write_text("\n".join(json.dumps(r) for r in rs) + "\n")
+    stage(root, tmp_path / "reports", tmp_path / "staging")
+    import pyarrow.parquet as pq
+    t = pq.read_table(tmp_path / "staging/sentfin/instruct_atsc/train.parquet")
+    assert t.to_pylist() == recs["train"]
+    assert str(t.schema.field("extra").type) == "string"  # typed from all splits, not null
 
 
 def _front_matter(card: str) -> dict:

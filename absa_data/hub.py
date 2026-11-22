@@ -16,6 +16,8 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import yaml
 
 from .schema import LABELS, SPLITS
@@ -24,13 +26,15 @@ from .taxonomy import map_fiqa_aspect
 
 HF_SPLIT = {"train": "train", "valid": "validation", "test": "test"}
 SOURCES = {"sentfin": "SEntFiN 1.0", "fiqa": "FiQA 2018 Task 1", "combined": "SEntFiN + FiQA"}
-KINDS = {  # kind -> (file format, description)
-    "pairs": ("parquet", "one (text, target) per row, all columns"),
-    "sentences": ("jsonl", "one text per row, all its targets with spans, sentiment and aspect"),
-    "instruct_atsc": ("jsonl", "chat messages: targets given -> sentiment per target"),
-    "instruct_aspect": ("jsonl", "chat messages: targets given -> aspect + sentiment per target"),
-    "instruct_e2e": ("jsonl", "chat messages: extract entities + sentiment"),
-    "instruct_e2e_aspect": ("jsonl", "chat messages: extract (entity, aspect, sentiment) triplets"),
+# Everything is published as parquet: `datasets` infers one file format per repo, so
+# mixing parquet and JSONL configs makes the JSONL ones fail to load.
+KINDS = {
+    "pairs": "one (text, target) per row, all columns",
+    "sentences": "one text per row, all its targets with spans, sentiment and aspect",
+    "instruct_atsc": "chat messages: targets given -> sentiment per target",
+    "instruct_aspect": "chat messages: targets given -> aspect + sentiment per target",
+    "instruct_e2e": "chat messages: extract entities + sentiment",
+    "instruct_e2e_aspect": "chat messages: extract (entity, aspect, sentiment) triplets",
 }
 DOCS = ("data_profile.md", "sentiment_label_calibration.md", "ASPECT_GUIDELINES.md", "aspect_label_quality.md")
 
@@ -47,6 +51,23 @@ GATE = {
 }
 
 
+def _write_splits(table: pa.Table, sizes: list[int], out: Path, staging: Path) -> list[dict]:
+    """Slice one table (one schema for all splits) into train / validation / test parquet files."""
+    out.mkdir(parents=True, exist_ok=True)
+    data_files, offset = [], 0
+    for split, n in zip(SPLITS, sizes):
+        dest = out / f"{HF_SPLIT[split]}.parquet"
+        pq.write_table(table.slice(offset, n), dest)
+        offset += n
+        data_files.append({"split": HF_SPLIT[split], "path": dest.relative_to(staging).as_posix()})
+    return data_files
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def stage(processed: Path, reports: Path, staging: Path) -> list[dict]:
     """Copy processed files into `staging` in the Hub layout. Returns the config list."""
     if staging.exists():
@@ -57,20 +78,19 @@ def stage(processed: Path, reports: Path, staging: Path) -> list[dict]:
         if not (src / "pairs.parquet").exists():
             continue
         pairs = pd.read_parquet(src / "pairs.parquet")
-        for kind, (fmt, _) in KINDS.items():
-            files = {s: src / f"{kind}_{s}.jsonl" for s in SPLITS}
-            if kind != "pairs" and not all(f.exists() for f in files.values()):
-                continue
-            out = staging / source / kind
-            out.mkdir(parents=True, exist_ok=True)
-            data_files = []
-            for split in SPLITS:
-                dest = out / f"{HF_SPLIT[split]}.{fmt}"
-                if kind == "pairs":
-                    pairs[pairs["split"] == split].to_parquet(dest, index=False)
-                else:
-                    shutil.copyfile(files[split], dest)
-                data_files.append({"split": HF_SPLIT[split], "path": dest.relative_to(staging).as_posix()})
+        for kind in KINDS:
+            if kind == "pairs":
+                parts = [pairs[pairs["split"] == s] for s in SPLITS]
+                table = pa.Table.from_pandas(pd.concat(parts, ignore_index=True), preserve_index=False)
+                sizes = [len(p) for p in parts]
+            else:
+                files = [src / f"{kind}_{s}.jsonl" for s in SPLITS]
+                if not all(f.exists() for f in files):
+                    continue
+                records = [_read_jsonl(f) for f in files]
+                table = pa.Table.from_pylist([r for rs in records for r in rs])
+                sizes = [len(rs) for rs in records]
+            data_files = _write_splits(table, sizes, staging / source / kind, staging)
             name = source if kind == "pairs" else f"{source}_{kind}"
             configs.append({"config_name": name, "data_files": data_files, **({"default": True} if name == "sentfin" else {})})
     docs = staging / "docs"
@@ -84,10 +104,7 @@ def stage(processed: Path, reports: Path, staging: Path) -> list[dict]:
 
 
 def _count(path: Path) -> int:
-    if path.suffix == ".parquet":
-        return len(pd.read_parquet(path, columns=["uid"]))
-    with path.open(encoding="utf-8") as f:
-        return sum(1 for _ in f)
+    return pq.read_metadata(path).num_rows
 
 
 def _pct(x: float) -> str:
