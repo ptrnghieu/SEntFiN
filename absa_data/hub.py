@@ -26,7 +26,16 @@ from .taxonomy import map_fiqa_aspect
 
 HF_SPLIT = {"train": "train", "valid": "validation", "test": "test"}
 SOURCES = {"sentfin": "SEntFiN 1.0", "fiqa": "FiQA 2018 Task 1", "finentity": "FinEntity",
-           "combined": "all sources"}
+           "combined": "all sources", "fiqa_finben": "FiQA 2018 Task 1, FinBen ±0.1 classes"}
+DERIVED = ("combined", "fiqa_finben")  # re-packagings of other sources; left out of the statistics
+
+
+def split_config(name: str) -> tuple[str, str]:
+    """'fiqa_finben_instruct_atsc' -> ('fiqa_finben', 'instruct_atsc'); longest source name first."""
+    for source in sorted(SOURCES, key=len, reverse=True):
+        if name == source or name.startswith(source + "_"):
+            return source, name[len(source) + 1:] or "pairs"
+    raise KeyError(name)
 # Everything is published as parquet: `datasets` infers one file format per repo, so
 # mixing parquet and JSONL configs makes the JSONL ones fail to load.
 KINDS = {
@@ -114,7 +123,7 @@ def _pct(x: float) -> str:
 
 
 def build_card(staging: Path, configs: list[dict], code_url: str, calibration: dict | None) -> str:
-    parts = [pd.read_parquet(p) for p in sorted(staging.glob("*/pairs/*.parquet")) if p.parts[-3] != "combined"]
+    parts = [pd.read_parquet(p) for p in sorted(staging.glob("*/pairs/*.parquet")) if p.parts[-3] not in DERIVED]
     pairs = pd.concat(parts, ignore_index=True)
     sf, fq = pairs[pairs["source"] == "sentfin"], pairs[pairs["source"] == "fiqa"]
     has_fiqa = len(fq) > 0
@@ -135,8 +144,8 @@ def build_card(staging: Path, configs: list[dict], code_url: str, calibration: d
     rows = []
     for c in configs:
         counts = {d["split"]: _count(staging / d["path"]) for d in c["data_files"]}
-        source, _, kind = c["config_name"].partition("_")
-        rows.append(f"| `{c['config_name']}` | {SOURCES[source]} | {KINDS[kind or 'pairs']} | "
+        source, kind = split_config(c["config_name"])
+        rows.append(f"| `{c['config_name']}` | {SOURCES[source]} | {KINDS[kind]} | "
                     f"{counts['train']:,} | {counts['validation']:,} | {counts['test']:,} |")
 
     def mix(d: pd.DataFrame) -> str:
@@ -199,7 +208,7 @@ Aspect labels and the calibration labels were generated with an OpenAI model (`g
 ```python
 from datasets import load_dataset
 
-pairs = load_dataset("{{repo_id}}", "sentfin")            # or "fiqa", "combined"
+pairs = load_dataset("{{repo_id}}", "sentfin")            # or "fiqa", "finentity", "combined"
 sft = load_dataset("{{repo_id}}", "combined_instruct_aspect")
 ```
 
@@ -306,6 +315,12 @@ Filter on `target_source == "gold"` to evaluate against human labels only.
   * all targets of a headline, and near-duplicate headlines, stay in one split.
 * **FiQA** keeps its official train / valid / test splits (here `validation` = valid). 3 tweets
   appear in two splits with different t.co links; they are flagged `near_duplicate_across_splits`.
+* **`fiqa_finben`** is FiQA as benchmarks define it, for comparison with published numbers: only
+  the 1,173 originally annotated pairs, the official splits, and FinBen's classes
+  (negative < -0.1 ≤ neutral < 0.1 ≤ positive; test 84 / 12 / 138), with soft labels around ±0.1.
+  The `fiqa` config instead uses the thresholds calibrated to SEntFiN (see below) and adds the
+  LLM-completed targets. Do not train `fiqa_finben` together with the other sources: for
+  0.1 ≤ score < 0.22 its classes contradict SEntFiN's convention. It is not part of `combined`.
 * **⚠ Benchmark leak.** FinBen's sentence-level FiQA-SA (`ChanceFocus/flare-fiqasa`) splits the same
   rows differently: 175 of its 233 test sentences are in this FiQA `train`. Do not train here and
   report on FiQA-SA test, or the other way round.
@@ -364,7 +379,7 @@ def push(staging: Path, repo_id: str, gated: str | None, public: bool, commit_me
         api.update_repo_settings(repo_id, repo_type="dataset", gated=gated)
     api.upload_folder(
         repo_id=repo_id, repo_type="dataset", folder_path=str(staging), commit_message=commit_message,
-        delete_patterns=["sentfin/**", "fiqa/**", "combined/**", "docs/**"],
+        delete_patterns=[f"{s}/**" for s in SOURCES] + ["docs/**"],
     )
     log(f"uploaded {staging} -> {repo_id}")
     if gated:

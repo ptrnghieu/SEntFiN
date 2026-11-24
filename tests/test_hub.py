@@ -83,3 +83,11 @@ def test_card_without_fiqa_is_not_gated(tmp_path):
     fm = _front_matter((staging / "README.md").read_text())
     assert "extra_gated_prompt" not in fm and [c["config_name"] for c in fm["configs"]] == [
         "sentfin", "sentfin_sentences", "sentfin_instruct_atsc"]
+
+
+def test_split_config_handles_underscored_sources():
+    from absa_data.hub import split_config
+    assert split_config("fiqa_finben_instruct_atsc") == ("fiqa_finben", "instruct_atsc")
+    assert split_config("fiqa_instruct_atsc") == ("fiqa", "instruct_atsc")
+    assert split_config("fiqa_finben") == ("fiqa_finben", "pairs")
+    assert split_config("combined_instruct_e2e_aspect") == ("combined", "instruct_e2e_aspect")
