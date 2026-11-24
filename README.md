@@ -15,6 +15,9 @@ ready-to-train files for encoder and LLM fine-tuning, and writes a data profile.
 
 * **Which dataset to use, and why:** [`reports/DATASET_COMPARISON.md`](reports/DATASET_COMPARISON.md)
 * **Generated statistics:** [`reports/data_profile.md`](reports/data_profile.md)
+* **Exploratory data analysis (figures, deployment-domain gap):** [`reports/eda/EDA.md`](reports/eda/EDA.md),
+  regenerated with `python -m absa_data eda` (needs `matplotlib`; reads the crawler exports in
+  `../minhhai205/aspect-based-fsa/data/exports` when present, `--target-domain` to change).
 
 ### Quick start
 
@@ -250,11 +253,12 @@ entity_seen_in_train, quality_flags`
 | `absa_data/calibration.py` | soft sentiment labels, noise estimates, FiQA threshold calibration |
 | `absa_data/finentity.py`, `sentsplit.py` | FinEntity loader; crawler's normalizer and sentence splitter |
 | `absa_data/completion.py` | LLM target completion, validation on FinEntity |
+| `absa_data/eda.py` | exploratory data analysis report and figures |
 | `absa_data/hub.py` | Hugging Face Hub staging, dataset card, gated upload |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
 | `absa_data/profile.py` | `reports/data_profile.md` |
-| `absa_data/cli.py` | `python -m absa_data build / annotate / complete-targets / review-sheet / review-eval / calibrate / push-hub` |
+| `absa_data/cli.py` | `python -m absa_data build / annotate / complete-targets / review-sheet / review-eval / calibrate / push-hub / eda` |
 
 ### Citations
 

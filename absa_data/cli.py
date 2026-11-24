@@ -550,6 +550,14 @@ def _write_completion_report(res: dict, args, n_texts: int, n_given: int) -> Non
     Path("reports/target_completion_validation.md").write_text(report, encoding="utf-8")
 
 
+def eda(args) -> None:
+    from .eda import run
+
+    out = run(Path(args.processed), Path(args.out), Path(args.target_domain) if args.target_domain else None,
+              Path(args.annotations_dir) / "calibration" / "fiqa_thresholds.json")
+    print(f"report: {out}")
+
+
 def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sentfin-csv", default="SEntFiN.csv")
     p.add_argument("--entity-list", default="entity_list_comprehensive.csv")
@@ -627,6 +635,13 @@ def main(argv=None) -> None:
     t.add_argument("--limit", type=int)
     t.add_argument("--dry-run", action="store_true")
 
+    x = sub.add_parser("eda", help="exploratory data analysis of data/processed -> reports/eda/")
+    x.add_argument("--processed", default="data/processed")
+    x.add_argument("--out", default="reports/eda")
+    x.add_argument("--target-domain", default="../minhhai205/aspect-based-fsa/data/exports",
+                   help="crawler exports (<day>/<doc>.json) used as the deployment domain")
+    x.add_argument("--annotations-dir", default="annotations")
+
     c = sub.add_parser("calibrate", help="fit FiQA score thresholds to SEntFiN's label semantics")
     _data_args(c)
     c.add_argument("--model", default=DEFAULT_MODEL)
@@ -645,7 +660,7 @@ def main(argv=None) -> None:
     if getattr(args, "reasoning_effort", None) == "":
         args.reasoning_effort = None
     {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval,
-     "calibrate": calibrate, "push-hub": push_hub, "complete-targets": complete_targets}[args.cmd](args)
+     "calibrate": calibrate, "push-hub": push_hub, "complete-targets": complete_targets, "eda": eda}[args.cmd](args)
 
 
 if __name__ == "__main__":
