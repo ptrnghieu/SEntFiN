@@ -10,7 +10,8 @@ KEYS = {  # (task dir, metric subset, metric) shown per run
     "target_extraction": [("finentity spans", "f1"), ("finentity spans+sentiment", "macro_f1"), ("all spans", "f1")],
     "sentiment": [("all, gold sentiment only", "macro_f1"), ("sentfin, gold only", "accuracy"), ("sentfin, gold only", "macro_f1"),
                   ("sentfin, gold, unseen entities", "macro_f1"), ("fiqa, gold only", "macro_f1"),
-                  ("fiqa vs FinBen classes (polarity_finben)", "macro_f1"), ("finentity, gold only", "macro_f1")],
+                  ("fiqa vs FinBen classes (polarity_finben)", "macro_f1"), ("finentity, gold only", "macro_f1"),
+                  ("fiqa_finben, gold only", "accuracy"), ("fiqa_finben, gold only", "macro_f1")],
     "aspect": [("all", "macro_f1"), ("all, level 1", "macro_f1"), ("fiqa vs human gold aspects (mapped)", "accuracy"),
                ("fiqa vs human gold aspects (mapped)", "macro_f1")],
 }

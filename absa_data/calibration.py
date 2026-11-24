@@ -308,3 +308,39 @@ def refresh_text_stats(pairs: pd.DataFrame, texts: pd.DataFrame) -> tuple[pd.Dat
     pairs["is_mixed"] = g["polarity"].transform("nunique") > 1
     texts["n_targets"] = texts["text_id"].map(g.size()).fillna(0).astype(int)
     return pairs, texts
+
+
+# ----------------------------------------------------------------------------- FinBen-protocol FiQA
+
+FINBEN_SOURCE = "fiqa_finben"
+
+
+def fiqa_finben_variant(pairs: pd.DataFrame, texts: pd.DataFrame, sigma: float
+                        ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """FiQA as the FinBen benchmark defines it, for comparison with published numbers.
+
+    * only the original annotated pairs (human score); LLM-added targets are dropped, since
+      their labels follow SEntFiN's convention;
+    * polarity from FinBen's thresholds (negative < -0.1 <= neutral < 0.1 <= positive);
+    * soft labels from Normal(score, sigma) around those thresholds;
+    * the official en-fiqa-absa splits; ids prefixed ``fiqa_finben-`` (same number as in ``fiqa``).
+    Do not train it together with the other sources: its neutral/positive boundary differs.
+    """
+    neg_below, pos_from = FINBEN_THRESHOLDS
+    p = pairs[(pairs["source"] == "fiqa") & pairs["score"].notna()].copy()
+    t = texts[texts["text_id"].isin(p["text_id"])].copy()
+    rename = lambda s: s.str.replace(r"^fiqa-", f"{FINBEN_SOURCE}-", regex=True)  # noqa: E731
+    p["uid"], p["text_id"], t["text_id"] = rename(p["uid"]), rename(p["text_id"]), rename(t["text_id"])
+    p["source"], t["source"] = FINBEN_SOURCE, FINBEN_SOURCE
+    p["group_id"] = p["group_id"].astype(str) + "|finben"
+    t["group_id"] = t["group_id"].astype(str) + "|finben"
+    p["polarity"] = apply_thresholds(p["score"], neg_below, pos_from)
+    p["polarity_finben"] = p["polarity"]
+    p["label"] = p["polarity"].map(LABEL2ID)
+    probs = np.round(np.array([soft_from_score(s, sigma, neg_below, pos_from) for s in p["score"]]), 4)
+    p["label_type"] = "soft"
+    p["p_negative"], p["p_neutral"], p["p_positive"] = probs[:, 0], probs[:, 1], probs[:, 2]
+    p["label_confidence"] = probs.max(axis=1)
+    t["target_annotation"] = "partial"
+    p["target_annotation"] = "partial"
+    return refresh_text_stats(p, t)

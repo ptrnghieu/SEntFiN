@@ -18,7 +18,12 @@ import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score, f1_score
 
-SOURCES = ("sentfin", "fiqa", "finentity")
+SOURCES = ("sentfin", "fiqa", "finentity")  # trained together by default
+# Selectable with --train-sources / --eval-sources, never part of the default mix:
+#   fiqa_finben  FiQA under FinBen's +-0.1 thresholds, for comparison with published numbers
+#   vnnews       crawled Vietnam news (in-domain; LLM labels until the test split is reviewed)
+EXTRA_SOURCES = ("fiqa_finben", "vnnews")
+ALL_SOURCES = SOURCES + EXTRA_SOURCES
 
 
 def set_seed(seed: int) -> None:

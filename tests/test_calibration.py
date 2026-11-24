@@ -154,3 +154,20 @@ def test_llm_added_targets_get_silver_sentiment(tmp_path):
     soft = add_soft_labels(relabel_fiqa(out, -0.1, 0.24), 0.08, 0.04, -0.1, 0.24, {"high": 0.1, "medium": 0.4})
     row = soft.set_index("uid").loc["s1#x0"]
     assert row["label_type"] == "silver" and [row["p_negative"], row["p_neutral"], row["p_positive"]] == [0.9, 0.1, 0.0]
+
+
+def test_fiqa_finben_variant():
+    import pandas as pd
+    from absa_data.calibration import fiqa_finben_variant
+    pairs = pd.DataFrame({
+        "uid": ["fiqa-1#0", "fiqa-1#x0", "fiqa-2#0", "sentfin-1#0"], "text_id": ["fiqa-1", "fiqa-1", "fiqa-2", "sentfin-1"],
+        "source": ["fiqa", "fiqa", "fiqa", "sentfin"], "score": [0.15, None, -0.3, None],
+        "polarity": ["neutral", "positive", "negative", "neutral"], "group_id": ["g1", "g1", "g2", "g3"]})
+    texts = pd.DataFrame({"text_id": ["fiqa-1", "fiqa-2", "sentfin-1"], "source": ["fiqa", "fiqa", "sentfin"],
+                          "group_id": ["g1", "g2", "g3"], "target_annotation": "llm_completed"})
+    p, t = fiqa_finben_variant(pairs, texts, sigma=0.083)
+    assert p["uid"].tolist() == ["fiqa_finben-1#0", "fiqa_finben-2#0"]  # scored pairs only
+    assert p["polarity"].tolist() == ["positive", "negative"]  # 0.15 >= 0.1 -> positive under FinBen
+    assert (p["p_positive"].iloc[0] > 0.5) and set(p["source"]) == {"fiqa_finben"}
+    assert t["text_id"].tolist() == ["fiqa_finben-1", "fiqa_finben-2"] and t["n_targets"].tolist() == [1, 1]
+    assert set(t["target_annotation"]) == {"partial"}

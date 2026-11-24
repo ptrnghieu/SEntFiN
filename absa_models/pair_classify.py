@@ -30,7 +30,7 @@ from torch import nn
 from absa_data.taxonomy import LABELS as ASPECTS
 from absa_data.taxonomy import map_fiqa_aspect
 
-from .common import SOURCES, load_encoder, load_tokenizer, cls_metrics, device, load_table, set_seed, train_loop, write_results
+from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, cls_metrics, device, load_table, set_seed, train_loop, write_results
 
 SENTIMENTS = ("negative", "neutral", "positive")
 MARK_OPEN, MARK_CLOSE = "<t>", "</t>"
@@ -136,8 +136,8 @@ def main(argv=None):
     ap.add_argument("--task", choices=["sentiment", "aspect"], required=True)
     ap.add_argument("--processed", default="data/processed")
     ap.add_argument("--model", default="yiyanghkust/finbert-pretrain")
-    ap.add_argument("--train-sources", nargs="+", default=list(SOURCES), choices=SOURCES)
-    ap.add_argument("--eval-sources", nargs="+", default=list(SOURCES), choices=SOURCES)
+    ap.add_argument("--train-sources", nargs="+", default=list(SOURCES), choices=ALL_SOURCES)
+    ap.add_argument("--eval-sources", nargs="+", default=list(SOURCES), choices=ALL_SOURCES)
     ap.add_argument("--gold-only", action="store_true",
                     help="sentiment: train only on pairs with human sentiment (drop LLM-added targets)")
     ap.add_argument("--soft", action="store_true", help="sentiment: train on the soft labels")

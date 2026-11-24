@@ -16,12 +16,13 @@ from pathlib import Path
 import pandas as pd
 
 from . import summarize
-from .common import SOURCES, load_table, write_results
+from .common import ALL_SOURCES, load_table, write_results
 from .pair_classify import report
 
 
 def rescore(root: Path, processed: Path = Path("data/processed")) -> list[Path]:
-    pairs = load_table(processed, "pairs", SOURCES).set_index("uid")
+    available = [s for s in ALL_SOURCES if (processed / s / "pairs.parquet").exists()]
+    pairs = load_table(processed, "pairs", available).set_index("uid")
     done = []
     for task in ("sentiment", "aspect"):
         for f in sorted((root / task).glob("**/test_predictions.jsonl")):

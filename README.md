@@ -155,6 +155,24 @@ Summary and training recipes: the "Hard vs soft sentiment labels" section of
   * Build options: `--fiqa-thresholds {calibrated,finben}`, `--fiqa-sigma`,
     `--sentfin-flip-rate` (0 = one-hot).
 
+#### FiQA under FinBen's thresholds (`data/processed/fiqa_finben/`)
+
+`fiqa` cuts FiQA scores at the thresholds calibrated to SEntFiN (neutral = [-0.1, 0.22)), so the
+three sources share one meaning of the classes. Published FiQA numbers use FinBen's ±0.1. For
+comparisons, `build` also writes `fiqa_finben`:
+
+- only the 1,173 originally annotated pairs (no LLM-added targets), the official splits
+  (822 / 117 / 234);
+- `polarity` = FinBen's class (test: 84 negative / 12 neutral / 138 positive), soft labels from
+  Normal(score, sigma) around ±0.1;
+- ids `fiqa_finben-<n>#<k>`, the same numbers as in `fiqa`;
+- not part of `combined`, and not a default training source: its neutral/positive boundary
+  conflicts with SEntFiN's convention for 0.1 <= score < 0.22.
+
+```bash
+python -m absa_models.pair_classify --task sentiment --train-sources fiqa_finben --eval-sources fiqa_finben
+```
+
 ### Publishing to the Hugging Face Hub
 
 ```bash

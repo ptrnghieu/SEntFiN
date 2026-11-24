@@ -219,6 +219,10 @@ def build(args) -> None:
                                              texts[texts["source"] == source])
     if len(summary) > 1:
         summary["combined"] = export_dataset(pairs, root / "combined", texts)
+    if (pairs["source"] == "fiqa").any():  # FinBen protocol, kept out of `combined`
+        from .calibration import FINBEN_SOURCE, fiqa_finben_variant
+        fb_pairs, fb_texts = fiqa_finben_variant(pairs, texts, sigma)
+        summary[FINBEN_SOURCE] = export_dataset(fb_pairs[PAIR_COLUMNS], root / FINBEN_SOURCE, fb_texts)
     issues.to_csv(root / "issues.csv", index=False)
 
     report = Path(args.report)
@@ -228,7 +232,7 @@ def build(args) -> None:
     GUIDELINES_PATH.write_text(guidelines_markdown(), encoding="utf-8")
 
     for name, counts in summary.items():
-        print(f"{name:9s} " + "  ".join(f"{k}={v}" for k, v in counts.items()
+        print(f"{name:11s} " + "  ".join(f"{k}={v}" for k, v in counts.items()
                                          if k.startswith(("pairs_", "sentences_", "instruct_aspect_"))))
     print(f"aspect labels: llm={info['llm_labels']} human={info['human_labels']} "
           f"(unlabelled pairs: {int(pairs['aspect'].isna().sum())})")

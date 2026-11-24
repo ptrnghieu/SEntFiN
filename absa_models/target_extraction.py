@@ -23,7 +23,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from .common import SOURCES, load_encoder, load_tokenizer, load_table, set_seed, span_metrics, train_loop, write_results
+from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, load_table, set_seed, span_metrics, train_loop, write_results
 
 POLARITIES = ("negative", "neutral", "positive")
 
@@ -178,8 +178,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--processed", default="data/processed")
     ap.add_argument("--model", default="yiyanghkust/finbert-pretrain")
-    ap.add_argument("--train-sources", nargs="+", default=["finentity"], choices=SOURCES)
-    ap.add_argument("--eval-sources", nargs="+", default=["finentity"], choices=SOURCES)
+    ap.add_argument("--train-sources", nargs="+", default=["finentity"], choices=ALL_SOURCES)
+    ap.add_argument("--eval-sources", nargs="+", default=["finentity"], choices=ALL_SOURCES)
     ap.add_argument("--scheme", choices=["bio", "bio-sentiment"], default="bio")
     ap.add_argument("--crf", action="store_true")
     ap.add_argument("--epochs", type=int, default=10)

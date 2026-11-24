@@ -14,6 +14,7 @@ $TE --train-sources finentity sentfin fiqa --crf                        # + LLM-
 # 1b sentiment given the target
 $PC --task sentiment --train-sources sentfin --eval-sources sentfin     # compare with SEntFiN paper (~94% acc)
 $PC --task sentiment --train-sources fiqa --eval-sources fiqa
+$PC --task sentiment --train-sources fiqa_finben --eval-sources fiqa_finben   # FinBen's +-0.1 classes
 $PC --task sentiment --train-sources finentity --eval-sources finentity
 $PC --task sentiment --gold-only                                        # all sources, human sentiment only
 $PC --task sentiment --soft --class-weights                             # all sources + silver, soft labels
