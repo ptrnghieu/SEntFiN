@@ -145,7 +145,8 @@ def build_card(staging: Path, configs: list[dict], code_url: str, calibration: d
         return " / ".join(_pct(d["polarity"].eq(l).mean()) for l in LABELS) if len(d) else "-"
 
     asp_rows = "\n".join(
-        f"| {a} | {int((sf['aspect'] == a).sum()):,} | {int((fq['aspect'] == a).sum()):,} |" for a in ASPECTS)
+        f"| {a} | {int((sf['aspect'] == a).sum()):,} | {int((fq['aspect'] == a).sum()):,} | "
+        f"{int((pairs.loc[pairs['source'] == 'finentity', 'aspect'] == a).sum()):,} |" for a in ASPECTS)
     quality = ""
     if has_fiqa:
         g = fq.assign(gold=fq["fiqa_aspect"].map(map_fiqa_aspect)).dropna(subset=["gold"])
@@ -286,12 +287,15 @@ Filter on `target_source == "gold"` to evaluate against human labels only.
 * It must echo each target with its label, so labels cannot shift between targets.
 
 **These are silver labels.**
-{quality}* Human-verified labels in this release: {human:,} pairs.
-  * A blind human review of 400 SEntFiN test headlines is in progress.
-  * Until it is published, aspect results on `test` measure agreement with the LLM, not accuracy.
+{quality}* **No human verification** in this release ({human:,} human-checked pairs): every aspect label and
+  every LLM-added target is model-generated. The evidence of quality is the agreement figures above,
+  the FinEntity validation of the target completion and the bridge annotator's 83.9 % agreement
+  with SEntFiN gold sentiment.
+* Aspect results on `test` therefore measure agreement with the LLM, not accuracy. For an aspect
+  evaluation against human labels, use FiQA's original gold aspects (`fiqa_aspect`).
 
-| aspect | SEntFiN | FiQA |
-|---|---|---|
+| aspect | SEntFiN | FiQA | FinEntity |
+|---|---|---|---|
 {asp_rows}
 
 ## Splits

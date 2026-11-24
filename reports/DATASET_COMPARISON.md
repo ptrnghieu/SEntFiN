@@ -17,13 +17,14 @@ The repo therefore does the following:
    Economy / Other ([`ASPECT_GUIDELINES.md`](ASPECT_GUIDELINES.md)).
 2. **Silver aspect labels for every pair of both datasets** from `gpt-6-luna`, using the same prompt
    and rules (15,491 pairs). FiQA's original gold aspects are kept in `fiqa_aspect*`.
-3. **A blind human check** of 400 SEntFiN test headlines (538 pairs), done by you
-   (`annotations/review/`). Once filled in, these labels become the gold aspect test set, and the
-   agreement report says how far the silver labels can be trusted.
+3. **No human review in this release** (decided to skip). Quality evidence comes from agreement
+   with FiQA's gold aspects, the FinEntity validation of the target completion, and the bridge
+   annotator's agreement with SEntFiN gold sentiment. The blind review tooling
+   (`review-sheet` / `review-eval`) stays in the repo if a check is wanted later.
 
 **Main training source: SEntFiN.** It has 14,318 pairs with human sentiment labels and LLM aspect
-labels. Add FiQA train for US/UK news and tweets. Report aspect results on the human-verified
-test subset. Results on silver test labels only say how well a model imitates the LLM.
+labels. Add FiQA train for US/UK news and tweets. Aspect results on the silver test labels say
+how well a model imitates the LLM; FiQA's original gold aspects are the only human aspect labels.
 
 ## Side by side
 
@@ -41,7 +42,7 @@ test subset. Results on silver test labels only say how well a model imitates th
 | Test pairs / 95 % CI on an accuracy near 80 % | 1,433 / ±2.1 pp | 234 / ±5.1 pp |
 | Neutral pairs in test | 547 | 30 (FinBen: **12**, ±28 pp on that class) |
 | Aspect categories (original) | none | 4 top-level, 28 second-level (3 never in train, 5 with < 5 train examples) |
-| Aspect categories (this repo) | silver, 21 unified categories; human gold on 400 test headlines once reviewed | silver, same 21 categories |
+| Aspect categories (this repo) | silver, 21 unified categories (not human-verified) | silver, same 21 categories |
 | Access | MIT, in this repo | MIT, gated (access form, cite FinBen) |
 
 ## Hard vs soft sentiment labels
@@ -145,8 +146,7 @@ sectors, fund / investor groups, rates and countries.
 * **Columns:** `target_source` / `sentiment_source` (`gold` or `llm`), `target_annotation`
   (`exhaustive` / `llm_completed`), `target_type`. The end-to-end instruct exports now use only
   exhaustive or LLM-completed texts.
-* **Evaluation:** target extraction should be evaluated on FinEntity, the human-verified review set
-  and the Vietnam test set. Sentiment and aspect results against human labels need
+* **Evaluation:** target extraction should be evaluated on FinEntity and the Vietnam test set. Sentiment and aspect results against human labels need
   `target_source == "gold"`.
 
 ## Silver aspect labels: how they were made and how good they are
@@ -179,7 +179,7 @@ sectors, fund / investor groups, rates and countries.
     Short Selling, while the unified rules treat an author's own position as a recommendation.
   * The mapping was revised once after the first pilot, then frozen so that it is not tuned
     towards the LLM's answers.
-* **Human agreement:** pending your review (`python -m absa_data review-eval`).
+* **Human agreement:** not measured; the human review was skipped for this release.
 * **Distribution on SEntFiN:** ~40 % of pairs fall in Market/* and Economy/* categories, where
   FiQA has at most 25 examples per category. The largest categories are Financial Results 11.7 %,
   Equity Market 11.4 %, Outlook & Recommendations 11.4 %, Sectors 9.4 % and Commodities 8.6 %.
@@ -189,7 +189,6 @@ sectors, fund / investor groups, rates and countries.
 * Train on all silver labels.
 * Optionally down-weight or drop `aspect_confidence == "medium" | "low"` (16 % of pairs) and
   compare.
-* Report aspect metrics on the human-verified subset, where `aspect_source == "human"`.
 * If the human agreement turns out low for some categories, refine their definitions in
   `taxonomy.py` and re-run `annotate`. Only pairs whose prompt version changed are re-labelled.
 
@@ -284,8 +283,8 @@ sectors, fund / investor groups, rates and countries.
      headlines (`n_targets > 1`, `is_mixed`);
    * FiQA test, as out-of-domain, split into headlines and posts. Also report it on
      `polarity_finben` when comparing with published FiQA numbers;
-   * for aspects: the human-verified SEntFiN test subset (gold) first. Silver test labels are
-     secondary, and FiQA's original gold aspects (`fiqa_aspect`) can serve as an extra check.
+   * for aspects: silver test labels (agreement with the LLM), plus FiQA's original gold aspects
+     (`fiqa_aspect`) as the only human reference.
 3. Optional: add FiQA train (the `combined/` export), then measure the in-domain gain on FiQA
    test and any regression on SEntFiN test.
 4. Use the trivial baselines in `data_profile.md` as the floor any model must clearly beat,
