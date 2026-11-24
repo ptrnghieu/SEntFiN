@@ -1,0 +1,3 @@
+torch>=2.2
+transformers>=4.44
+pytorch-crf>=0.7.2

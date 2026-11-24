@@ -207,6 +207,52 @@ python -m absa_data push-hub --repo <user>/<name>
   * Added targets carry `target_source = llm` and `label_type = silver`; gold rows are never
     changed.
 
+### Baselines: single-task FinBERT (steps 1a-1c)
+
+Package `absa_models/`; backbone `yiyanghkust/finbert-pretrain` by default (`--model` to change).
+Every run writes `metrics.json`, `metrics.md`, `test_predictions.jsonl` and `best.pt` under `runs/`.
+
+| step | command | trains on | key test metrics |
+|---|---|---|---|
+| 1a | `python -m absa_models.target_extraction --crf [--scheme bio-sentiment]` | FinEntity (+ completed SEntFiN/FiQA with `--train-sources`) | exact span P/R/F1 on FinEntity; `bio-sentiment` reproduces FinEntity's FinBERT-CRF (macro-F1 0.85) |
+| 1b | `python -m absa_models.pair_classify --task sentiment [--soft] [--gold-only]` | pairs, target marked in the text | macro-F1 on human sentiment, per source, SEntFiN unseen entities, FiQA vs FinBen classes |
+| 1c | `python -m absa_models.pair_classify --task aspect` | pairs | level-2 / level-1 macro-F1 (silver), FiQA vs human gold aspects |
+
+On a GPU (Colab: Runtime > Change runtime type > T4 GPU), run each step as its own cell:
+
+1. Clone the repository and switch to the branch:
+
+   ```bash
+   git clone https://github.com/ptrnghieu/SEntFiN && cd SEntFiN && git checkout claude/adoring-fermat-r9ta0k
+   ```
+
+2. Install the data and training requirements:
+
+   ```bash
+   pip install -r requirements.txt -r requirements-train.txt
+   ```
+
+3. Log in to Hugging Face. You need to have accepted the FiQA access form.
+
+   ```bash
+   huggingface-cli login
+   ```
+
+4. Rebuild `data/processed`. This takes about 15 s, and the LLM labels are already committed.
+
+   ```bash
+   python -m absa_data build
+   ```
+
+5. Run every baseline, about 1-2 h on a T4, and collect the results in `runs/SUMMARY.md`:
+
+   ```bash
+   bash scripts/run_baselines.sh
+   ```
+
+`tests/test_models.py` checks the code on CPU with a tiny random BERT: tags round-trip to the gold
+spans, and every model can overfit a small set.
+
 ### Splits
 
 * **FiQA:** the official train/valid/test splits.
@@ -254,6 +300,7 @@ entity_seen_in_train, quality_flags`
 | `absa_data/finentity.py`, `sentsplit.py` | FinEntity loader; crawler's normalizer and sentence splitter |
 | `absa_data/completion.py` | LLM target completion, validation on FinEntity |
 | `absa_data/eda.py` | exploratory data analysis report and figures |
+| `absa_models/` | single-task FinBERT baselines (target extraction, sentiment, aspect), `summarize` |
 | `absa_data/hub.py` | Hugging Face Hub staging, dataset card, gated upload |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
