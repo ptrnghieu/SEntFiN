@@ -76,9 +76,14 @@ def invalidate_changed(texts: pd.DataFrame, annotations_dir: Path) -> list[str]:
             f = paths[key]
             if f.exists():
                 keep = [l for l in f.read_text(encoding="utf-8").splitlines()
-                        if l.strip() and json.loads(l).get("text_id") not in bad]
+                        if l.strip() and _record_text_id(json.loads(l)) not in bad]
                 f.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
     return changed
+
+
+def _record_text_id(rec: dict) -> str | None:
+    """Label records carry text_id; fall back to the uid (<text_id>@<k>)."""
+    return rec.get("text_id") or (rec.get("uid") or "").rsplit("@", 1)[0] or None
 
 
 def save_hashes(texts: pd.DataFrame, annotations_dir: Path) -> None:
