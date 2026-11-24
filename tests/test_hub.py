@@ -74,7 +74,7 @@ def test_card_is_gated_when_it_contains_fiqa(tmp_path):
     assert list(fm["extra_gated_fields"].values()) == ["checkbox"]
     assert [c["config_name"] for c in fm["configs"]][0] == "sentfin"
     assert 'load_dataset("me/ds", "sentfin")' in card and "{repo_id}" not in card
-    assert "| `sentfin` | SEntFiN 1.0 |" in card
+    assert "| `sentfin` | SEntFiN 1.0 | one (text, target) per row, all columns |" in card
 
 
 def test_card_without_fiqa_is_not_gated(tmp_path):

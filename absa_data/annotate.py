@@ -296,8 +296,17 @@ def read_labels(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
         return pd.DataFrame(columns=["uid", "text_id", "target", "aspect", "confidence", "model", "prompt_version"])
-    df = pd.read_json(path, lines=True, dtype=False)
-    return df
+    rows = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:  # only a half-written last line (interrupted or ongoing run) is tolerated
+                raise
+    return pd.DataFrame(rows)
 
 
 def done_uids(path: str | Path, model: str, prompt_version: str, reasoning_effort: str | None = None) -> set[str]:

@@ -31,30 +31,30 @@ SEntFiN gives hard classes; FiQA gives scores in [-1, 1] that are cut into class
 |---|---|---|---|
 | SEntFiN gold (valid) | 26.5% | 38.3% | 35.2% |
 | bridge LLM on SEntFiN (valid) | 28.8% | 34.7% | 36.5% |
-| FiQA, FinBen thresholds ±0.1 | 30.9% | 7.8% | 61.3% |
-| FiQA, calibrated [-0.1, 0.24) | 30.9% | 19.2% | 49.9% |
-| bridge LLM on FiQA | 32.1% | 22.9% | 44.9% |
+| FiQA train+valid, FinBen thresholds ±0.1 | 29.7% | 8.4% | 61.9% |
+| FiQA, calibrated [-0.1, 0.22) | 29.7% | 17.0% | 53.2% |
+| bridge LLM on FiQA train+valid | 30.4% | 23.7% | 45.9% |
 
 
 ## 3. FiQA score by bridge label
 
 | bridge label | pairs | score q25 | median | q75 |
 |---|---|---|---|---|
-| negative | 377 | -0.51 | -0.373 | -0.228 |
-| neutral | 269 | 0.042 | 0.199 | 0.335 |
-| positive | 527 | 0.331 | 0.443 | 0.544 |
+| negative | 285 | -0.51 | -0.364 | -0.216 |
+| neutral | 223 | 0.036 | 0.192 | 0.345 |
+| positive | 431 | 0.334 | 0.443 | 0.55 |
 
 
 ## 4. Thresholds
 
 | thresholds | neg_below | pos_from | agreement with bridge |
 |---|---|---|---|
-| FinBen | -0.1 | 0.1 | 74.7% |
-| best fit | -0.01 | 0.24 | 78.4% |
-| **chosen** | **-0.1** | **0.24** | 78.3% |
+| FinBen | -0.1 | 0.1 | 73.8% |
+| best fit | -0.01 | 0.22 | 77.7% |
+| **chosen** | **-0.1** | **0.22** | 77.3% |
 
 
-Bootstrap 95 % intervals of the best fit: neg_below [-0.14, 0.0], pos_from [0.16, 0.28]. Rule: a FinBen threshold is kept unless its interval excludes it (the agreement surface is flat over wide ranges, so a marginally better point estimate is not evidence). The build uses the chosen thresholds for `polarity` / `label` and the soft labels.
+Bootstrap 95 % intervals of the best fit: neg_below [-0.161, 0.0], pos_from [0.179, 0.28]. Rule: a FinBen threshold is kept unless its interval excludes it (the agreement surface is flat over wide ranges, so a marginally better point estimate is not evidence). The build uses the chosen thresholds for `polarity` / `label` and the soft labels. Thresholds are fitted on FiQA train + valid (939 pairs); on the held-out FiQA test (234 pairs) the chosen thresholds agree with the bridge on 80.8% vs 78.2% for FinBen.
 
 ## 5. Label noise estimates (for soft labels)
 

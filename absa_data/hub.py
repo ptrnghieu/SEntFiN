@@ -25,7 +25,8 @@ from .taxonomy import LABELS as ASPECTS
 from .taxonomy import map_fiqa_aspect
 
 HF_SPLIT = {"train": "train", "valid": "validation", "test": "test"}
-SOURCES = {"sentfin": "SEntFiN 1.0", "fiqa": "FiQA 2018 Task 1", "combined": "SEntFiN + FiQA"}
+SOURCES = {"sentfin": "SEntFiN 1.0", "fiqa": "FiQA 2018 Task 1", "finentity": "FinEntity",
+           "combined": "all sources"}
 # Everything is published as parquet: `datasets` infers one file format per repo, so
 # mixing parquet and JSONL configs makes the JSONL ones fail to load.
 KINDS = {
@@ -36,18 +37,19 @@ KINDS = {
     "instruct_e2e": "chat messages: extract entities + sentiment",
     "instruct_e2e_aspect": "chat messages: extract (entity, aspect, sentiment) triplets",
 }
-DOCS = ("data_profile.md", "sentiment_label_calibration.md", "ASPECT_GUIDELINES.md", "aspect_label_quality.md")
+DOCS = ("data_profile.md", "sentiment_label_calibration.md", "ASPECT_GUIDELINES.md", "aspect_label_quality.md",
+        "target_completion_validation.md")
 
 GATE = {
     "extra_gated_heading": "Access processed SEntFiN + FiQA data",
     "extra_gated_prompt": (
         "This dataset contains processed FiQA 2018 Task 1 data. TheFinAI distributes FiQA behind an access "
         "form (https://huggingface.co/datasets/TheFinAI/en-fiqa-absa). By requesting access you agree to the "
-        "licenses of FiQA (MIT, as released by TheFinAI) and SEntFiN 1.0 (MIT), and to cite FinBen, FiQA and "
-        "SEntFiN in any resulting publication."
+        "licenses of FiQA (MIT, as released by TheFinAI), SEntFiN 1.0 (MIT) and FinEntity (ODC-BY), and to cite "
+        "FinBen, FiQA, SEntFiN and FinEntity in any resulting publication."
     ),
     "extra_gated_button_content": "Agree and access",
-    "extra_gated_fields": {"I agree to the terms above and will cite FinBen, FiQA and SEntFiN": "checkbox"},
+    "extra_gated_fields": {"I agree to the terms above and will cite FinBen, FiQA, SEntFiN and FinEntity": "checkbox"},
 }
 
 
@@ -134,11 +136,13 @@ def build_card(staging: Path, configs: list[dict], code_url: str, calibration: d
     for c in configs:
         counts = {d["split"]: _count(staging / d["path"]) for d in c["data_files"]}
         source, _, kind = c["config_name"].partition("_")
-        rows.append(f"| `{c['config_name']}` | {SOURCES[source]} | {KINDS[kind or 'pairs'][1]} | "
+        rows.append(f"| `{c['config_name']}` | {SOURCES[source]} | {KINDS[kind or 'pairs']} | "
                     f"{counts['train']:,} | {counts['validation']:,} | {counts['test']:,} |")
 
     def mix(d: pd.DataFrame) -> str:
-        return " / ".join(_pct(d["polarity"].eq(l).mean()) for l in LABELS)
+        if "target_source" in d:
+            d = d[d["target_source"] == "gold"]  # human labels only
+        return " / ".join(_pct(d["polarity"].eq(l).mean()) for l in LABELS) if len(d) else "-"
 
     asp_rows = "\n".join(
         f"| {a} | {int((sf['aspect'] == a).sum()):,} | {int((fq['aspect'] == a).sum()):,} |" for a in ASPECTS)
@@ -157,11 +161,13 @@ def build_card(staging: Path, configs: list[dict], code_url: str, calibration: d
     body = f"""
 # SEntFiN + FiQA for aspect-based financial sentiment analysis
 
-Two financial (target, sentiment) datasets, cleaned and mapped onto **one schema**:
+Three financial (target, sentiment) datasets, cleaned and mapped onto **one schema**:
 
 * **SEntFiN 1.0**: Indian financial news headlines with entity-level sentiment.
 * **FiQA 2018 Task 1**, as packaged in [`TheFinAI/en-fiqa-absa`](https://huggingface.co/datasets/TheFinAI/en-fiqa-absa):
   UK/US headlines and StockTwits posts with a sentiment score.
+* **FinEntity** ([`yixuantt/FinEntity`](https://huggingface.co/datasets/yixuantt/FinEntity)): Reuters news,
+  split into sentences, with every financial entity annotated (span + sentiment).
 
 Both get:
 
@@ -175,10 +181,11 @@ Code that produced this release: {code_url}
 ## Access and licensing
 
 Access is gated because FiQA is distributed behind an access form by TheFinAI. This repo repeats
-its terms: agree to the licenses and cite FinBen. Both sources are MIT-licensed:
+its terms: agree to the licenses and cite FinBen. Licenses:
 
 * SEntFiN 1.0: © 2021 Ankur Sinha, Satishwar Kedas, Rishu Kumar, Pekka Malo.
-* FiQA: as released by TheFinAI.
+* FiQA: MIT, as released by TheFinAI.
+* FinEntity: ODC-BY (Tang et al., EMNLP 2023).
 
 Aspect labels and the calibration labels were generated with an OpenAI model (`gpt-6-luna`).
 
@@ -205,7 +212,10 @@ You need to accept the access form first and be logged in (`huggingface-cli logi
 | `start`, `end` | character span of the target in `text` (null if the target does not occur) |
 | `polarity`, `label` | sentiment class: negative=0, neutral=1, positive=2. Same meaning in both sources (see below) |
 | `p_negative`, `p_neutral`, `p_positive` | soft sentiment label; `soft_label` in JSONL files |
-| `label_type`, `label_confidence` | `hard` (SEntFiN) or `soft` (FiQA); confidence = max soft probability |
+| `label_type`, `label_confidence` | `hard` (annotated class), `soft` (FiQA score) or `silver` (sentiment of an LLM-added target); confidence = max soft probability |
+| `target_source`, `sentiment_source` | `gold` or `llm`: who found the target / labelled its sentiment |
+| `target_annotation` | `exhaustive` (FinEntity), `llm_completed` (SEntFiN, FiQA: gold + LLM-added targets) |
+| `target_type` | company, index_market, sector, commodity, currency, regulator_government, ... (LLM) |
 | `score`, `polarity_finben` | FiQA only: original score in [-1, 1], and its class under FinBen's ±0.1 thresholds |
 | `aspect`, `aspect_l1` | unified aspect category, e.g. `Corporate/Financial Results`, and its top level |
 | `aspect_source`, `aspect_confidence` | `llm:<model>@<prompt version>` or `human`; LLM self-reported confidence |
@@ -241,10 +251,28 @@ of FiQA is neutral, against 38 % of SEntFiN: the two "neutral"s do not mean the 
 
 | | negative / neutral / positive |
 |---|---|
-| SEntFiN | {mix(sf)} |
-| FiQA (calibrated) | {mix(fq) if has_fiqa else '-'} |
+| SEntFiN (gold) | {mix(sf)} |
+| FiQA (gold, calibrated) | {mix(fq) if has_fiqa else '-'} |
+| FinEntity (gold) | {mix(pairs[pairs["source"] == "finentity"])} |
 
 Evidence: [`docs/sentiment_label_calibration.md`](docs/sentiment_label_calibration.md).
+
+## Targets: gold and LLM-completed
+
+SEntFiN and FiQA do not annotate every target: FiQA labels only the target its score is about, SEntFiN
+matched a fixed entity list. Trained as plain span tagging, a model would learn to skip real entities.
+So an LLM (`gpt-6-luna`) listed the missing targets of every SEntFiN and FiQA text:
+
+* gold targets are never changed;
+* an added target must occur verbatim, must not overlap a gold target, and references such as
+  "the market" are dropped by rule;
+* added targets get their sentiment from the bridge annotator (`label_type = silver`, soft label from
+  its measured error rate) and an aspect from the aspect labeller.
+
+Validated on FinEntity, which is exhaustive: with half of the gold targets hidden, the completion
+recovers 94.3 % of them, and 88.1 % of its additions within FinEntity's own scope (companies, indices,
+regulators) are gold ([`docs/target_completion_validation.md`](docs/target_completion_validation.md)).
+Filter on `target_source == "gold"` to evaluate against human labels only.
 
 ## Aspect categories
 
@@ -314,6 +342,8 @@ Please cite the original datasets and FinBen:
 * Maia et al. *WWW'18 Open Challenge: Financial Opinion Mining and Question Answering.* WWW '18
   Companion, 2018.
 * Xie et al. *FinBen: A Holistic Financial Benchmark for Large Language Models.* arXiv:2402.12659.
+* Tang, Yang, Huang, Tam & Tang. *FinEntity: Entity-level Sentiment Classification for Financial Texts.*
+  EMNLP 2023.
 """
     return f"---\n{yml}---\n{body}"
 

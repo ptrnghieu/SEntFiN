@@ -1,0 +1,11 @@
+{
+ "hidden": 211,
+ "added": 347,
+ "recall_exact": 0.943127962085308,
+ "recall_partial": 0.957345971563981,
+ "precision": 0.590778097982709,
+ "precision_in_finentity_scope": 0.8810572687224669,
+ "added_in_scope": 227,
+ "empty_texts": 44,
+ "additions_on_empty_texts": 15
+}

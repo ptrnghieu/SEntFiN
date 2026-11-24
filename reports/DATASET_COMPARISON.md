@@ -32,14 +32,14 @@ test subset. Results on silver test labels only say how well a model imitates th
 | Texts / (text, target) pairs | **10,679 / 14,318** | 1,111 / 1,173 |
 | Text | Indian financial news headlines | 436 UK/US headlines + 675 StockTwits posts |
 | Annotation | entity → negative / neutral / positive | target → score in [-1, 1] + aspect category path |
-| 3-class labels | annotated by humans (**hard**) | derived from a noisy score (**soft**). Here: neg < -0.1 ≤ neu < **0.24** ≤ pos, calibrated to SEntFiN; FinBen's ±0.1 kept in `polarity_finben` |
-| Label mix neg / neu / pos | 26.5 / 38.2 / 35.3 % | 30.9 / 19.2 / 49.9 % (FinBen: 30.9 / **7.8** / 61.3 %) |
+| 3-class labels | annotated by humans (**hard**) | derived from a noisy score (**soft**). Here: neg < -0.1 ≤ neu < **0.22** ≤ pos, calibrated to SEntFiN on train + valid; FinBen's ±0.1 kept in `polarity_finben` |
+| Label mix neg / neu / pos | 26.5 / 38.2 / 35.3 % | 30.9 / 16.2 / 52.9 % (FinBen: 30.9 / **7.8** / 61.3 %) |
 | Label noise (estimated) | 7 of 80 repeated judgements disagree, all negative ↔ neutral | score noise σ ≈ 0.08, as wide as FinBen's neutral band |
 | Texts with >1 target | **2,836 (26.6 %)** | 57 (5.1 %) |
 | Texts whose targets disagree in polarity | **1,228 (11.5 %)** | 11 (1.0 %); **0 in test** |
 | Official split | none (this repo ships a frozen, leakage-safe 80/10/10) | 822 / 117 / 234 pairs |
 | Test pairs / 95 % CI on an accuracy near 80 % | 1,433 / ±2.1 pp | 234 / ±5.1 pp |
-| Neutral pairs in test | 547 | 42 (FinBen: **12**, ±28 pp on that class) |
+| Neutral pairs in test | 547 | 30 (FinBen: **12**, ±28 pp on that class) |
 | Aspect categories (original) | none | 4 top-level, 28 second-level (3 never in train, 5 with < 5 train examples) |
 | Aspect categories (this repo) | silver, 21 unified categories; human gold on 400 test headlines once reviewed | silver, same 21 categories |
 | Access | MIT, in this repo | MIT, gated (access form, cite FinBen) |
@@ -65,17 +65,19 @@ classes. Three findings ([`sentiment_label_calibration.md`](sentiment_label_cali
 **What the build does**
 
 * **One meaning of negative / neutral / positive across sources.**
-  * FiQA scores are cut at **neg < −0.1 ≤ neu < 0.24 ≤ pos**.
-  * The positive cut-off moved: the best fit is 0.24, with a bootstrap 95 % interval
-    [0.16, 0.28] that excludes FinBen's 0.1.
-  * The negative cut-off stays at FinBen's −0.1, because the fit is flat from −0.12 to 0.
-  * In effect, 134 mildly positive FiQA pairs (scores 0.10–0.24) become neutral.
+  * FiQA scores are cut at **neg < −0.1 ≤ neu < 0.22 ≤ pos**, fitted on FiQA **train + valid**
+    only (939 pairs), so the test split plays no part in defining its own labels.
+  * The positive cut-off moved: the best fit is 0.22, with a bootstrap 95 % interval
+    [0.18, 0.28] that excludes FinBen's 0.1. On the held-out test, the new cut agrees with the
+    bridge on 80.8 % of pairs against 78.2 % for FinBen.
+  * The negative cut-off stays at FinBen's −0.1, because the fit is flat from −0.16 to 0.
+  * In effect, 99 mildly positive FiQA pairs (scores 0.10–0.22) become neutral.
   * FinBen's classes stay in `polarity_finben` for comparison with published FiQA results.
 * **Soft labels for every pair.** `label_type` says hard / soft. `p_negative`, `p_neutral`,
   `p_positive` are the soft label (`soft_label` in the JSONL files), and `label_confidence` is
   their maximum.
   * FiQA: the probability of each class if the true score is Normal(score, σ = 0.083), cut at
-    the thresholds above. A score of 0.22 → [0.00, 0.57, 0.42]; 0.6 → [0, 0, 1].
+    the thresholds above. A score of 0.15 → [0.00, 0.80, 0.20]; 0.22 → [0.00, 0.50, 0.50]; 0.6 → [0, 0, 1].
   * SEntFiN: ordinal smoothing with the measured flip rate (4.4 %), moved only to adjacent
     classes. Neutral → [0.02, 0.96, 0.02]; positive → [0, 0.04, 0.96].
   * Options: `--sentfin-flip-rate 0` gives SEntFiN one-hot labels, and
@@ -93,10 +95,59 @@ classes. Three findings ([`sentiment_label_calibration.md`](sentiment_label_cali
   Optionally add a regression head on `score`, masked to FiQA rows.
 * **LLM SFT** (text answers, so hard labels): every instruct record carries `label_confidence`
   (lowest among its targets). Use it to weight the loss, or drop records below a cut-off.
-  A cut-off of 0.8 removes the 216 FiQA pairs closest to a threshold; SEntFiN rows (0.956) are
-  never affected.
+  A cut-off of 0.8 removes the 200 gold FiQA pairs closest to a threshold and the 1,196 silver
+  pairs whose bridge label had medium or low confidence; gold SEntFiN and FinEntity rows (0.956)
+  are never affected.
 * **Evaluation:** use hard `polarity` (SEntFiN gold, calibrated FiQA). For numbers comparable
   with FiQA papers, also report FiQA test on `polarity_finben`, or regression metrics on `score`.
+
+## FinEntity and LLM-completed targets
+
+**FinEntity** (Tang et al., EMNLP 2023; ODC-BY) is the third source and the only one with
+*exhaustive* targets: every financial entity in its 979 Reuters paragraphs has a span and a
+sentiment.
+
+* **Cleaning.**
+  * 70 spans shifted by broken characters were re-anchored.
+  * Reuters codes (`<JNJ.N>`, `[nL4N…]`) were removed and the spans recomputed.
+* **Sentence splitting.** Paragraphs are split with the crawler's own normalizer and splitter, so
+  training text looks like deployment text; no gold span is ever cut.
+* **Result:** 1,371 sentences with 2,131 targets, plus 215 sentences without any entity (true
+  negatives for extraction).
+* **Split:** frozen 80/10/10 manifest, grouped by paragraph and duplicate text.
+* **Sentiment convention:** the bridge annotator agrees with FinEntity gold on 90.9 %, so its labels
+  are used as they are.
+
+**SEntFiN and FiQA targets are completed by an LLM.** FiQA labels only the target its score is
+about (all 93 posts with ≥ 2 cashtags have one target), and SEntFiN matched a fixed entity list.
+`gpt-6-luna` therefore listed the missing targets of every text, under rules enforced in code:
+
+* gold targets are never changed;
+* additions must be verbatim and must not overlap gold;
+* "the market"-style references are dropped.
+
+| | gold targets | LLM-added | texts with an addition |
+|---|---|---|---|
+| SEntFiN | 14,318 | 2,865 | 2,502 of 10,679 |
+| FiQA | 1,173 | 702 | 451 of 1,111 |
+
+The additions are mostly what the original annotators skipped: regulators and governments, indices,
+sectors, fund / investor groups, rates and countries.
+
+* **Labels for the added targets.** Sentiment comes from the bridge annotator (`label_type =
+  silver`, soft label from its error rate at the confidence it reported), and the aspect from the
+  aspect labeller.
+* **Validation on FinEntity.** Half of each sentence's gold targets were hidden and the completion
+  had to find them: **94.3 %** were recovered, and **88.1 %** of its additions within FinEntity's
+  scope (companies, indices, regulators) are gold. Additions outside that scope (currencies,
+  sectors, countries) follow SEntFiN's convention, which FinEntity does not share
+  ([`target_completion_validation.md`](target_completion_validation.md)).
+* **Columns:** `target_source` / `sentiment_source` (`gold` or `llm`), `target_annotation`
+  (`exhaustive` / `llm_completed`), `target_type`. The end-to-end instruct exports now use only
+  exhaustive or LLM-completed texts.
+* **Evaluation:** target extraction should be evaluated on FinEntity, the human-verified review set
+  and the Vietnam test set. Sentiment and aspect results against human labels need
+  `target_source == "gold"`.
 
 ## Silver aspect labels: how they were made and how good they are
 
@@ -150,8 +201,8 @@ classes. Three findings ([`sentiment_label_calibration.md`](sentiment_label_cali
    FiQA's test split has no such sentence, and 98 % of its test sentences have a single target.
    A model that ignores the target entirely therefore loses almost nothing on FiQA test.
 3. **Its labels are balanced and annotated directly.** FiQA's classes come from cutting a noisy
-   score. Its neutral class is 7.8 % under FinBen's thresholds (12 test pairs) and 19 % after
-   calibration (42 test pairs). Macro-F1 on FiQA test still swings by several points with a
+   score. Its neutral class is 7.8 % under FinBen's thresholds (12 test pairs) and 16 % after
+   calibration (30 test pairs). Macro-F1 on FiQA test still swings by several points with a
    handful of predictions.
 4. **Its test numbers are about 2.5 times more precise** (±2.1 pp against ±5.1 pp).
 

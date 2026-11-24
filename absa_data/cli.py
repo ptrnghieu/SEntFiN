@@ -23,7 +23,7 @@ from . import fiqa as fiqa_mod
 from .entities import load_alias_table
 from .schema import PAIR_COLUMNS
 from .sentfin import load_sentfin
-from .splits import (apply_manifest, assign_groups, check_no_leakage, mark_entity_seen,
+from .splits import (apply_manifest, assign_groups, check_no_leakage, connected_groups, mark_entity_seen,
                      save_manifest, stratified_group_split)
 
 GUIDELINES_PATH = Path("reports/ASPECT_GUIDELINES.md")
@@ -55,8 +55,44 @@ def _load_fiqa(args) -> tuple[pd.DataFrame, pd.DataFrame] | None:
         return None
 
 
-def load_pairs(args) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Load, clean and split both sources. Returns (pairs, issues, meta)."""
+def _load_finentity(args, aliases):
+    from . import finentity as fe_mod
+
+    if getattr(args, "no_finentity", False):
+        return None
+    try:
+        path = Path(args.finentity_path) if args.finentity_path else fe_mod.download_finentity()
+        return fe_mod.load_finentity(path, aliases)
+    except Exception as e:
+        print(f"[warn] FinEntity skipped ({type(e).__name__}: {str(e).splitlines()[0][:200]})", file=sys.stderr)
+        return None
+
+
+def _split_texts(pairs: pd.DataFrame, texts: pd.DataFrame, manifest: Path, seed: int, resplit: bool) -> str:
+    """Split a source whose texts may have no pairs (FinEntity): split pair rows by group, carry the
+    split to every text of the group, freeze it in a manifest keyed by text_id."""
+    from .text import dedup_key
+
+    texts["dedup"] = texts["text"].map(dedup_key)
+    texts["group_id"] = connected_groups(texts, ["paragraph_id", "dedup"])
+    pairs["group_id"] = pairs["text_id"].map(texts.set_index("text_id")["group_id"])
+    if manifest.exists() and not resplit:
+        texts["split"] = apply_manifest(texts, manifest)
+        note = f"frozen manifest {manifest}"
+    else:
+        by_group = pairs.assign(split=stratified_group_split(pairs, seed=seed)).groupby("group_id")["split"].first()
+        texts["split"] = texts["group_id"].map(by_group).fillna("train")
+        save_manifest(texts, manifest)
+        note = f"new StratifiedGroupKFold split by paragraph (seed={seed}) -> {manifest}"
+    pairs["split"] = pairs["text_id"].map(texts.set_index("text_id")["split"])
+    texts.drop(columns="dedup", inplace=True)
+    return note
+
+
+def load_pairs(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    """Load, clean and split all sources. Returns (pairs, texts, issues, meta)."""
+    from .schema import TEXT_COLUMNS
+
     sentfin_csv = Path(args.sentfin_csv)
     aliases = load_alias_table(args.entity_list) if Path(args.entity_list).exists() else None
 
@@ -70,7 +106,7 @@ def load_pairs(args) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
         sf["split"] = stratified_group_split(sf, seed=args.seed)
         save_manifest(sf, manifest)
         split_note = f"new StratifiedGroupKFold split (seed={args.seed}) -> {manifest}"
-    frames, issues = [sf], [sf_issues]
+    frames, issues, text_frames = [sf], [sf_issues], []
 
     fq = _load_fiqa(args)
     if fq is not None:
@@ -79,16 +115,47 @@ def load_pairs(args) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
         frames.append(fq_pairs)
         issues.append(fq_issues)
 
+    fe = _load_finentity(args, aliases)
+    fe_note = "not loaded"
+    if fe is not None:
+        fe_pairs, fe_texts, fe_issues = fe
+        fe_note = _split_texts(fe_pairs, fe_texts, Path(args.finentity_split_manifest), args.seed,
+                               getattr(args, "resplit", False))
+        frames.append(fe_pairs)
+        text_frames.append(fe_texts)
+        issues.append(fe_issues)
+
     pairs = pd.concat(frames, ignore_index=True)
+    # Provenance columns for sources whose loader does not set them (SEntFiN, FiQA: gold, partial targets).
+    for col in ("paragraph_id", "target_annotation", "target_source", "sentiment_source", "target_type"):
+        if col not in pairs:
+            pairs[col] = None
+    pairs["paragraph_id"] = pairs["paragraph_id"].fillna(pairs["text_id"])
+    pairs["target_annotation"] = pairs["target_annotation"].fillna("partial")
+    pairs["target_source"] = pairs["target_source"].fillna("gold")
+    pairs["sentiment_source"] = pairs["sentiment_source"].fillna("gold")
+    pairs["entity_seen_in_train"] = mark_entity_seen(pairs)
+
+    from_pairs = pairs.drop_duplicates("text_id")[["text_id", "source", "split", "text_type", "text", "paragraph_id",
+                                                   "target_annotation", "group_id"]].assign(sent_idx=0)
+    texts = pd.concat([from_pairs[~from_pairs["source"].isin(["finentity"])]] + text_frames, ignore_index=True)
+    texts["n_targets"] = texts["text_id"].map(pairs.groupby("text_id").size()).fillna(0).astype(int)
+    texts = texts[TEXT_COLUMNS]
+
+    from .completion import add_completed_targets
+    pairs, texts, cinfo = add_completed_targets(pairs, texts, Path(args.annotations_dir), aliases)
     pairs["entity_seen_in_train"] = mark_entity_seen(pairs)
     check_no_leakage(pairs)
+    check_no_leakage(texts.assign(source=texts["source"]))
     meta = {
         "SEntFiN csv sha256": _sha(sentfin_csv),
         "SEntFiN split": split_note,
         "FiQA": f"{fiqa_mod.FIQA_REPO}@{args.fiqa_revision[:12]}" if fq is not None else "not loaded",
         "FiQA score -> label": f"negative < {fiqa_mod.NEG_BELOW} <= neutral < {fiqa_mod.POS_FROM} <= positive",
+        "FinEntity": fe_note,
+        "LLM target completion": f"{cinfo['targets_added']} targets added in {cinfo['texts_completed']} texts",
     }
-    return pairs, pd.concat(issues, ignore_index=True), meta
+    return pairs, texts, pd.concat(issues, ignore_index=True), meta
 
 
 def label_files(annotations_dir: Path) -> tuple[list[Path], list[Path]]:
@@ -105,9 +172,15 @@ def build(args) -> None:
     from .taxonomy import TAXONOMY_VERSION, guidelines_markdown
 
     from .calibration import (DEFAULT_FIQA_SIGMA, DEFAULT_SENTFIN_FLIP_RATE, FINBEN_THRESHOLDS, add_soft_labels,
-                              load_calibration, relabel_fiqa)
+                              attach_llm_sentiment, llm_sentiment_files, load_calibration, refresh_text_stats,
+                              relabel_fiqa)
 
-    pairs, issues, meta = load_pairs(args)
+    pairs, texts, issues, meta = load_pairs(args)
+    pairs, sinfo = attach_llm_sentiment(pairs, llm_sentiment_files(Path(args.annotations_dir)))
+    if sinfo["dropped_unlabelled"]:
+        print(f"[warn] {sinfo['dropped_unlabelled']} LLM-added targets have no sentiment yet and were left out; run "
+              "`annotate --task sentiment --llm-targets`", file=sys.stderr)
+    meta["LLM target completion"] += f"; {sinfo['with_sentiment']} with bridge sentiment"
 
     # Sentiment: one meaning of negative/neutral/positive across sources + soft labels.
     cal = load_calibration(Path(args.annotations_dir) / "calibration" / "fiqa_thresholds.json")
@@ -118,7 +191,8 @@ def build(args) -> None:
     sigma = args.fiqa_sigma if args.fiqa_sigma is not None else (cal or {}).get("fiqa_score_sigma", DEFAULT_FIQA_SIGMA)
     flip = (args.sentfin_flip_rate if args.sentfin_flip_rate is not None
             else (cal or {}).get("sentfin_flip_rate", DEFAULT_SENTFIN_FLIP_RATE))
-    pairs = add_soft_labels(relabel_fiqa(pairs, neg_below, pos_from), sigma, flip, neg_below, pos_from)
+    pairs, texts = refresh_text_stats(relabel_fiqa(pairs, neg_below, pos_from), texts)
+    pairs = add_soft_labels(pairs, sigma, flip, neg_below, pos_from, (cal or {}).get("bridge_flip_by_confidence"))
     meta["FiQA score -> label"] = (f"negative < {neg_below} <= neutral < {pos_from} <= positive "
                                    f"({'calibrated to SEntFiN, see sentiment_label_calibration.md' if use_cal else 'FinBen'}); "
                                    "FinBen class kept in polarity_finben")
@@ -138,11 +212,13 @@ def build(args) -> None:
 
     root = Path(args.out)
     root.mkdir(parents=True, exist_ok=True)
-    has_fiqa = (pairs["source"] == "fiqa").any()
-    summary = {"sentfin": export_dataset(pairs[pairs["source"] == "sentfin"], root / "sentfin", e2e=True)}
-    if has_fiqa:
-        summary["fiqa"] = export_dataset(pairs[pairs["source"] == "fiqa"], root / "fiqa", e2e=False)
-        summary["combined"] = export_dataset(pairs, root / "combined", e2e=False)
+    summary = {}
+    for source in ("sentfin", "fiqa", "finentity"):
+        if (pairs["source"] == source).any():
+            summary[source] = export_dataset(pairs[pairs["source"] == source], root / source,
+                                             texts[texts["source"] == source])
+    if len(summary) > 1:
+        summary["combined"] = export_dataset(pairs, root / "combined", texts)
     issues.to_csv(root / "issues.csv", index=False)
 
     report = Path(args.report)
@@ -174,6 +250,8 @@ def _task(name: str):
 
 
 def _label_path(args, source: str) -> Path:
+    if args.task == "sentiment" and getattr(args, "llm_targets", False):  # training labels for LLM-added targets
+        return Path(f"{args.annotations_dir}/llm_sentiment/{source}_{args.model}.jsonl")
     if args.task == "sentiment":  # bridge labels for calibration only, never training labels
         return Path(f"{args.annotations_dir}/calibration/{source}_{args.model}_sentiment.jsonl")
     return Path(f"{args.annotations_dir}/llm/{source}_{args.model}.jsonl")
@@ -182,8 +260,10 @@ def _label_path(args, source: str) -> Path:
 def annotate(args) -> None:
     from .annotate import Annotator, make_client, make_items, render_batch
 
-    pairs, _, _ = load_pairs(args)
+    pairs, _, _, _ = load_pairs(args)
     pairs = pairs[pairs["source"] == args.source]
+    if getattr(args, "llm_targets", False):
+        pairs = pairs[pairs["target_source"] == "llm"]
     if args.splits:
         pairs = pairs[pairs["split"].isin(args.splits)]
     if args.text_ids:
@@ -215,7 +295,7 @@ def review_sheet(args) -> None:
     out = Path(args.out)
     if out.exists() and not args.overwrite:
         sys.exit(f"{out} exists (it may hold your labels); pass --overwrite to replace it")
-    pairs, _, _ = load_pairs(args)
+    pairs, _, _, _ = load_pairs(args)
     sample = sample_review_pairs(pairs, n_texts=args.n, seed=args.sample_seed)
     write_review_sheet(sample, out)
     print(f"{sample['text_id'].nunique()} headlines / {len(sample)} pairs -> {out}")
@@ -265,7 +345,7 @@ def calibrate(args) -> None:
     from .schema import LABELS
 
     args.task = "sentiment"
-    pairs, _, _ = load_pairs(args)
+    pairs, _, _, _ = load_pairs(args)
     v = SENTIMENT_TASK.version
 
     def joined(source):
@@ -275,8 +355,10 @@ def calibrate(args) -> None:
         lab = lab[lab["prompt_version"] == v]
         return pairs[pairs["source"] == source].merge(lab[["uid", "sentiment", "confidence"]], on="uid")
 
-    sf, fq = joined("sentfin"), joined("fiqa")
+    sf, fq_all = joined("sentfin"), joined("fiqa")
     sf_eval = sf[sf["split"] != "test"]  # never touch SEntFiN test
+    fq = fq_all[fq_all["split"] != "test"]  # thresholds are fitted on FiQA train + valid only
+    fq_test = fq_all[fq_all["split"] == "test"]
     dist = lambda x: {l: f"{(x == l).mean():.1%}" for l in LABELS}  # noqa: E731
     finben = apply_thresholds(fq["score"], -0.1, 0.1)
     fit = fit_thresholds(fq["score"], fq["sentiment"])
@@ -287,7 +369,14 @@ def calibrate(args) -> None:
     sigma = estimate_score_sigma(pairs[pairs["source"] == "fiqa"])
     dup = sentfin_duplicate_agreement(args.sentfin_csv)
 
+    flip_by_conf = {c: round(1 - float((g["sentiment"] == g["polarity"]).mean()), 3)
+                    for c, g in sf_eval.groupby("confidence") if len(g) >= 3}
+    test_agree = {"finben": float((apply_thresholds(fq_test["score"], -0.1, 0.1) == fq_test["sentiment"]).mean()),
+                  "chosen": float((apply_thresholds(fq_test["score"], chosen["neg_below"], chosen["pos_from"])
+                                   == fq_test["sentiment"]).mean())}
     result = {"neg_below": chosen["neg_below"], "pos_from": chosen["pos_from"],
+              "fitted_on": "FiQA train+valid", "heldout_test_agreement": {k: round(v, 4) for k, v in test_agree.items()},
+              "bridge_flip_by_confidence": flip_by_conf,
               "fitted": {"neg_below": fit["neg_below"], "pos_from": fit["pos_from"]}, **ci,
               "fit_accuracy": fit["accuracy"], "chosen_accuracy": round(chosen_acc, 4),
               "fiqa_pairs": fit["n"], "bridge": f"llm:{args.model}@{v}",
@@ -299,9 +388,9 @@ def calibrate(args) -> None:
 
     rows = [{"labels": "SEntFiN gold (valid)", **dist(sf_eval["polarity"])},
             {"labels": "bridge LLM on SEntFiN (valid)", **dist(sf_eval["sentiment"])},
-            {"labels": "FiQA, FinBen thresholds ±0.1", **dist(finben)},
+            {"labels": "FiQA train+valid, FinBen thresholds ±0.1", **dist(finben)},
             {"labels": f"FiQA, calibrated [{chosen['neg_below']}, {chosen['pos_from']})", **dist(calibrated)},
-            {"labels": "bridge LLM on FiQA", **dist(fq["sentiment"])}]
+            {"labels": "bridge LLM on FiQA train+valid", **dist(fq["sentiment"])}]
     by_llm = fq.groupby("sentiment")["score"].describe()[["count", "25%", "50%", "75%"]].round(3)
     report = "\n".join([
         "# Calibrating FiQA's score thresholds to SEntFiN's labels\n",
@@ -331,7 +420,10 @@ def calibrate(args) -> None:
         f"\nBootstrap 95 % intervals of the best fit: neg_below {ci['neg_below_95ci']}, pos_from "
         f"{ci['pos_from_95ci']}. Rule: a FinBen threshold is kept unless its interval excludes it (the "
         "agreement surface is flat over wide ranges, so a marginally better point estimate is not evidence). "
-        "The build uses the chosen thresholds for `polarity` / `label` and the soft labels.\n",
+        "The build uses the chosen thresholds for `polarity` / `label` and the soft labels. Thresholds are "
+        f"fitted on FiQA train + valid ({len(fq)} pairs); on the held-out FiQA test ({len(fq_test)} pairs) the "
+        f"chosen thresholds agree with the bridge on {test_agree['chosen']:.1%} vs {test_agree['finben']:.1%} for "
+        "FinBen.\n",
         "## 5. Label noise estimates (for soft labels)\n",
         f"* FiQA score noise σ ≈ **{sigma['sigma']}** from {sigma['groups']} (text, target) pairs scored more than "
         f"once ({sigma['differences']} differences: {sigma['scores']}). Very small sample.",
@@ -381,6 +473,83 @@ def push_hub(args) -> None:
     print(json.dumps(result, indent=1))
 
 
+def complete_targets(args) -> None:
+    from .annotate import make_client
+    from .completion import (PROMPT_VERSION, TargetCompleter, hide_gold, items_from, latest_completions,
+                             score_validation)
+
+    pairs, texts, _, _ = load_pairs(args)
+    pairs = pairs[(pairs["source"] == args.source) & (pairs["target_source"] == "gold")]
+    texts = texts[texts["source"] == args.source]
+    if args.splits:
+        texts = texts[texts["split"].isin(args.splits)]
+    if args.limit:
+        texts = texts.head(args.limit)
+    pairs = pairs[pairs["text_id"].isin(texts["text_id"])]
+    out_dir = Path(args.annotations_dir) / "completion"
+    if args.validate:
+        if args.source != "finentity":
+            sys.exit("--validate needs exhaustive gold: use --source finentity")
+        given, hidden = hide_gold(pairs, texts, keep_prob=args.keep_prob, seed=args.seed)
+        items = items_from(pairs, texts, given)
+        out = out_dir / f"finentity_validation_{args.model}_keep{args.keep_prob}_seed{args.seed}.jsonl"
+    else:
+        items = items_from(pairs, texts)
+        out = out_dir / f"{args.source}_{args.model}.jsonl"
+    print(f"{args.source}: {len(items)} texts, {sum(len(i.pairs) for i in items)} given targets; prompt "
+          f"{PROMPT_VERSION}; output {out}")
+    if args.dry_run:
+        from .completion import INSTRUCTIONS, render
+        print(INSTRUCTIONS, "\n---\n", render(items[:args.batch_size]))
+        return
+    stats = TargetCompleter(make_client(), model=args.model, reasoning_effort=args.reasoning_effort).run(
+        items, out, batch_size=args.batch_size, workers=args.workers)
+    print(json.dumps({k: v for k, v in stats.items() if k != "errors"}, indent=1))
+    for e in stats["errors"]:
+        print("  error:", e, file=sys.stderr)
+    if args.validate:
+        recs = latest_completions(out)
+        recs = recs[recs["text_id"].isin(texts["text_id"])]
+        gold_all = pairs.groupby("text_id")["target"].agg(list).to_dict()
+        res = score_validation(recs, hidden, gold_all)
+        print(json.dumps(res, indent=1))
+        (out.with_suffix(".score.json")).write_text(json.dumps(res, indent=1) + "\n")
+        _write_completion_report(res, args, len(texts), sum(len(v) for v in given.values()))
+
+
+def _write_completion_report(res: dict, args, n_texts: int, n_given: int) -> None:
+    from .completion import FINENTITY_SCOPE, PROMPT_VERSION
+    from .profile import md_table
+
+    pct = lambda x: f"{100 * x:.1f}%"  # noqa: E731
+    report = "\n".join([
+        "# Validation of LLM target completion on FinEntity\n",
+        "_Generated by `python -m absa_data complete-targets --source finentity --validate`._\n",
+        "FinEntity annotates every financial entity, so it can check the completion used on SEntFiN and FiQA. "
+        f"On FinEntity {', '.join(args.splits or ['all'])} ({n_texts} sentences), each distinct gold target was "
+        f"kept with probability {args.keep_prob} ({n_given} given) and the rest hidden; the model "
+        f"(`{args.model}`, prompt `{PROMPT_VERSION}`) had to find the hidden ones.\n",
+        md_table([
+            {"metric": "hidden gold targets", "value": res["hidden"]},
+            {"metric": "recall, exact match", "value": pct(res["recall_exact"])},
+            {"metric": "recall, exact or partial match", "value": pct(res["recall_partial"])},
+            {"metric": "additions", "value": res["added"]},
+            {"metric": "precision, all additions", "value": pct(res["precision"])},
+            {"metric": f"precision, additions typed {' / '.join(FINENTITY_SCOPE)} ({res['added_in_scope']})",
+             "value": pct(res["precision_in_finentity_scope"])},
+            {"metric": f"additions on the {res['empty_texts']} sentences without any gold target",
+             "value": res["additions_on_empty_texts"]},
+        ]),
+        "\n**Reading the precision.** FinEntity does not annotate currencies, most commodities, sectors, "
+        "countries or generic market references ('Wall Street', 'Japanese shares'), while SEntFiN does. The "
+        "completion follows SEntFiN's convention, so additions of those types count as errors here although "
+        "they are intended. Precision within FinEntity's own scope (companies, indices, regulators) is the "
+        "meaningful number. References that cannot be tied to an entity ('the market', 'the index') are "
+        "removed by a rule in code.\n",
+    ])
+    Path("reports/target_completion_validation.md").write_text(report, encoding="utf-8")
+
+
 def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sentfin-csv", default="SEntFiN.csv")
     p.add_argument("--entity-list", default="entity_list_comprehensive.csv")
@@ -390,6 +559,9 @@ def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--fiqa-revision", default=fiqa_mod.FIQA_REVISION)
     p.add_argument("--no-fiqa", action="store_true")
     p.add_argument("--require-fiqa", action="store_true", help="fail instead of skipping FiQA")
+    p.add_argument("--finentity-path", help="local FinEntity.json (skips download)")
+    p.add_argument("--no-finentity", action="store_true")
+    p.add_argument("--finentity-split-manifest", default="splits/finentity_split_v1.csv")
     p.add_argument("--annotations-dir", default="annotations")
 
 
@@ -414,10 +586,11 @@ def main(argv=None) -> None:
 
     a = sub.add_parser("annotate", help="label aspect categories with an LLM")
     _data_args(a)
-    a.add_argument("--source", choices=["sentfin", "fiqa"], required=True)
+    a.add_argument("--source", choices=["sentfin", "fiqa", "finentity"], required=True)
     a.add_argument("--task", choices=["aspect", "sentiment"], default="aspect",
                    help="sentiment = bridge labels for `calibrate` (stored under annotations/calibration/)")
     a.add_argument("--splits", nargs="+", choices=["train", "valid", "test"])
+    a.add_argument("--llm-targets", action="store_true", help="only targets added by complete-targets")
     a.add_argument("--text-ids", help="CSV/XLSX with a text_id column (e.g. the review sheet) to restrict to")
     a.add_argument("--model", default=DEFAULT_MODEL)
     a.add_argument("--reasoning-effort", default="low", help="passed to the API; '' to use the model default")
@@ -441,6 +614,19 @@ def main(argv=None) -> None:
     e.add_argument("--model", default=DEFAULT_MODEL)
     e.add_argument("--llm-labels", help="default: <annotations-dir>/llm/sentfin_<model>.jsonl")
 
+    t = sub.add_parser("complete-targets", help="LLM: add the targets a source's annotators missed")
+    _data_args(t)
+    t.add_argument("--source", choices=["sentfin", "fiqa", "finentity"], required=True)
+    t.add_argument("--splits", nargs="+", choices=["train", "valid", "test"])
+    t.add_argument("--validate", action="store_true", help="FinEntity only: hide part of the gold, score recovery")
+    t.add_argument("--keep-prob", type=float, default=0.5)
+    t.add_argument("--model", default=DEFAULT_MODEL)
+    t.add_argument("--reasoning-effort", default="low")
+    t.add_argument("--batch-size", type=int, default=10)
+    t.add_argument("--workers", type=int, default=6)
+    t.add_argument("--limit", type=int)
+    t.add_argument("--dry-run", action="store_true")
+
     c = sub.add_parser("calibrate", help="fit FiQA score thresholds to SEntFiN's label semantics")
     _data_args(c)
     c.add_argument("--model", default=DEFAULT_MODEL)
@@ -459,7 +645,7 @@ def main(argv=None) -> None:
     if getattr(args, "reasoning_effort", None) == "":
         args.reasoning_effort = None
     {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval,
-     "calibrate": calibrate, "push-hub": push_hub}[args.cmd](args)
+     "calibrate": calibrate, "push-hub": push_hub, "complete-targets": complete_targets}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -89,7 +89,7 @@ def test_sentence_and_instruct_records_are_ordered_by_position():
 
 @needs_csv
 def test_cli_build_sentfin_only(tmp_path):
-    cli.main(["build", "--no-fiqa", "--sentfin-csv", str(REPO / "SEntFiN.csv"),
+    cli.main(["build", "--no-fiqa", "--no-finentity", "--sentfin-csv", str(REPO / "SEntFiN.csv"),
               "--entity-list", str(REPO / "entity_list_comprehensive.csv"),
               "--split-manifest", str(REPO / "splits" / "sentfin_split_v1.csv"),
               "--out", str(tmp_path / "out"), "--report", str(tmp_path / "report.md")])

@@ -80,26 +80,41 @@ def load_calibration(path: str | Path) -> dict | None:
 def relabel_fiqa(pairs: pd.DataFrame, neg_below: float, pos_from: float) -> pd.DataFrame:
     """Re-cut FiQA scores at the given thresholds; keep the FinBen class in `polarity_finben`."""
     pairs = pairs.copy()
-    f = pairs["source"] == "fiqa"
+    f = (pairs["source"] == "fiqa") & pairs["score"].notna()  # LLM-added FiQA targets have no score
     pairs["polarity_finben"] = None
     pairs.loc[f, "polarity_finben"] = apply_thresholds(pairs.loc[f, "score"], *FINBEN_THRESHOLDS)
     pairs.loc[f, "polarity"] = apply_thresholds(pairs.loc[f, "score"], neg_below, pos_from)
     pairs.loc[f, "label"] = pairs.loc[f, "polarity"].map(LABEL2ID)
-    pairs.loc[f, "is_mixed"] = pairs[f].groupby("text_id")["polarity"].transform("nunique") > 1
     return pairs
 
 
+# 1 - accuracy of the bridge annotator against SEntFiN gold (valid), by its confidence;
+# overridden by `bridge_flip_by_confidence` in the calibration file.
+DEFAULT_BRIDGE_FLIP = {"high": 0.071, "medium": 0.427, "low": 0.667}
+
+
 def add_soft_labels(pairs: pd.DataFrame, fiqa_sigma: float, sentfin_flip_rate: float,
-                    neg_below: float, pos_from: float) -> pd.DataFrame:
-    """Add label_type, p_negative, p_neutral, p_positive, label_confidence (= max p)."""
+                    neg_below: float, pos_from: float, bridge_flip: dict | None = None) -> pd.DataFrame:
+    """Add label_type, p_negative, p_neutral, p_positive, label_confidence (= max p).
+
+    hard   annotated class (SEntFiN, FinEntity): ordinal smoothing with the measured flip rate
+    soft   FiQA gold: class probabilities from Normal(score, sigma) around the thresholds
+    silver sentiment from the bridge LLM (LLM-added targets): smoothing with its error rate
+           at the confidence it reported
+    """
     pairs = pairs.copy()
+    bridge_flip = bridge_flip or DEFAULT_BRIDGE_FLIP
+    conf = pairs["sentiment_confidence"] if "sentiment_confidence" in pairs else pd.Series(None, index=pairs.index)
+    kind = np.where(pairs["sentiment_source"].eq("llm"), "silver",
+                    np.where(pairs["source"].eq("fiqa") & pairs["score"].notna(), "soft", "hard"))
     probs = [
-        soft_from_score(s, fiqa_sigma, neg_below, pos_from) if src == "fiqa"
+        soft_from_score(s, fiqa_sigma, neg_below, pos_from) if k == "soft"
+        else soft_from_hard(pol, bridge_flip.get(c, bridge_flip["medium"])) if k == "silver"
         else soft_from_hard(pol, sentfin_flip_rate)
-        for src, s, pol in zip(pairs["source"], pairs["score"], pairs["polarity"])
+        for k, s, pol, c in zip(kind, pairs["score"], pairs["polarity"], conf)
     ]
     arr = np.round(np.array(probs, dtype=float), 4)
-    pairs["label_type"] = np.where(pairs["source"] == "fiqa", "soft", "hard")
+    pairs["label_type"] = kind
     pairs["p_negative"], pairs["p_neutral"], pairs["p_positive"] = arr[:, 0], arr[:, 1], arr[:, 2]
     pairs["label_confidence"] = arr.max(axis=1)
     return pairs
@@ -110,6 +125,7 @@ def add_soft_labels(pairs: pd.DataFrame, fiqa_sigma: float, sentfin_flip_rate: f
 def estimate_score_sigma(fiqa_pairs: pd.DataFrame) -> dict:
     """Annotation noise of FiQA scores from (text, target) pairs that occur more than once
     (re-posted tweets differing only in their link). sd(difference) = sqrt(2) * sigma."""
+    fiqa_pairs = fiqa_pairs[fiqa_pairs["score"].notna()]  # LLM-added targets have no score
     key = fiqa_pairs["text"].map(dedup_key) + "|" + fiqa_pairs["target"].map(surface_key)
     groups = fiqa_pairs.groupby(key)["score"].agg(list)
     groups = groups[groups.map(len) > 1]
@@ -252,3 +268,43 @@ def bootstrap_thresholds(scores: pd.Series, labels: pd.Series, n_boot: int = 200
         fits.append(fit_thresholds(scores.iloc[idx], labels.iloc[idx], step=0.02))
     q = lambda k: [round(float(np.percentile([f[k] for f in fits], p)), 3) for p in (2.5, 97.5)]  # noqa: E731
     return {"neg_below_95ci": q("neg_below"), "pos_from_95ci": q("pos_from")}
+
+
+def llm_sentiment_files(annotations_dir: Path) -> list[Path]:
+    return sorted(p for p in (annotations_dir / "llm_sentiment").glob("*.jsonl") if not p.name.endswith(".usage.jsonl"))
+
+
+def attach_llm_sentiment(pairs: pd.DataFrame, files: list[Path]) -> tuple[pd.DataFrame, dict]:
+    """Fill polarity of LLM-added targets from the bridge annotator; drop those still unlabelled."""
+    from .annotate import latest_labels
+
+    pairs = pairs.copy()
+    pairs["sentiment_confidence"] = None
+    llm = pairs["sentiment_source"].eq("llm")
+    labels = pd.concat([latest_labels(f, SENTIMENT_TASK.version) for f in files] or [pd.DataFrame()], ignore_index=True)
+    info = {"llm_targets": int(llm.sum()), "with_sentiment": 0, "dropped_unlabelled": 0}
+    if not labels.empty:
+        labels = labels[labels["prompt_version"] == SENTIMENT_TASK.version].drop_duplicates("uid", keep="last")
+        lab = labels.set_index("uid")
+        ok = llm & pairs["uid"].isin(lab.index)
+        ok &= pairs["target"].eq(pairs["uid"].map(lab["target"]))
+        pairs.loc[ok, "polarity"] = pairs.loc[ok, "uid"].map(lab["sentiment"])
+        pairs.loc[ok, "sentiment_confidence"] = pairs.loc[ok, "uid"].map(lab["confidence"])
+        pairs.loc[ok, "label"] = pairs.loc[ok, "polarity"].map(LABEL2ID)
+        info["with_sentiment"] = int(ok.sum())
+    drop = llm & pairs["polarity"].isna()
+    info["dropped_unlabelled"] = int(drop.sum())
+    pairs = pairs[~drop].reset_index(drop=True)
+    pairs["label"] = pairs["label"].astype(int)
+    return pairs, info
+
+
+def refresh_text_stats(pairs: pd.DataFrame, texts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Recompute n_targets / is_mixed after targets were added or relabelled."""
+    pairs = pairs.copy()
+    texts = texts.copy()
+    g = pairs.groupby("text_id")
+    pairs["n_targets"] = g["uid"].transform("size")
+    pairs["is_mixed"] = g["polarity"].transform("nunique") > 1
+    texts["n_targets"] = texts["text_id"].map(g.size()).fillna(0).astype(int)
+    return pairs, texts

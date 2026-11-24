@@ -5,8 +5,9 @@ import pandas as pd
 import pytest
 
 from absa_data.calibration import (SENTIMENT_EXAMPLES, SENTIMENT_TASK, add_soft_labels, apply_thresholds,
-                                   choose_thresholds, estimate_score_sigma, fit_thresholds, relabel_fiqa,
-                                   sentfin_duplicate_agreement, soft_from_hard, soft_from_score)
+                                   attach_llm_sentiment, choose_thresholds, estimate_score_sigma, fit_thresholds,
+                                   refresh_text_stats, relabel_fiqa, sentfin_duplicate_agreement, soft_from_hard,
+                                   soft_from_score)
 from absa_data.export import instruct_records, pair_records
 from absa_data.schema import LABELS
 from absa_data.text import dedup_key
@@ -47,6 +48,7 @@ def _toy():
         "label": [1, 2, 2, 2, 1],
         "score": [np.nan, np.nan, 0.15, 0.6, -0.05],
         "is_mixed": [True, True, False, False, False],
+        "sentiment_source": "gold", "uid": ["s1#0", "s1#1", "f1#0", "f1#1", "f2#0"],
     })
 
 
@@ -56,7 +58,10 @@ def test_relabel_fiqa_keeps_finben_and_updates_dependent_columns():
     assert out["label"].tolist() == [1, 2, 1, 2, 1]
     assert out["polarity_finben"].tolist()[2:] == ["positive", "positive", "neutral"]
     assert out["polarity_finben"].iloc[:2].isna().all()
+    texts = pd.DataFrame({"text_id": ["s1", "f1", "f2", "e1"]})
+    out, texts = refresh_text_stats(out, texts)
     assert out["is_mixed"].tolist() == [True, True, True, True, False]
+    assert texts["n_targets"].tolist() == [2, 2, 1, 0]
 
 
 def test_add_soft_labels():
@@ -128,3 +133,24 @@ def test_exports_pack_soft_labels_and_confidence():
     assert rec["soft_label"] == [0.02, 0.96, 0.02] and "p_neutral" not in rec  # SEntFiN neutral, flip 0.04
     ins = {r["id"]: r for r in instruct_records(df, "atsc")}
     assert ins["f1"]["label_confidence"] == df.loc[df["text_id"] == "f1", "label_confidence"].min()
+
+
+def test_llm_added_targets_get_silver_sentiment(tmp_path):
+    import json
+
+    from absa_data.calibration import SENTIMENT_TASK
+    pairs = _toy().assign(target=["a", "b", "c", "d", "e"])
+    pairs = pd.concat([pairs, pd.DataFrame([
+        {"uid": "s1#x0", "source": "sentfin", "text_id": "s1", "polarity": None, "label": pd.NA, "score": np.nan,
+         "sentiment_source": "llm", "target": "Fed"},
+        {"uid": "s1#x1", "source": "sentfin", "text_id": "s1", "polarity": None, "label": pd.NA, "score": np.nan,
+         "sentiment_source": "llm", "target": "dollar"}])], ignore_index=True)
+    f = tmp_path / "s.jsonl"
+    f.write_text(json.dumps({"uid": "s1#x0", "text_id": "s1", "target": "Fed", "sentiment": "negative",
+                             "confidence": "high", "model": "m", "prompt_version": SENTIMENT_TASK.version}) + "\n")
+    out, info = attach_llm_sentiment(pairs, [f])
+    assert info == {"llm_targets": 2, "with_sentiment": 1, "dropped_unlabelled": 1}
+    assert "s1#x1" not in set(out["uid"])
+    soft = add_soft_labels(relabel_fiqa(out, -0.1, 0.24), 0.08, 0.04, -0.1, 0.24, {"high": 0.1, "medium": 0.4})
+    row = soft.set_index("uid").loc["s1#x0"]
+    assert row["label_type"] == "silver" and [row["p_negative"], row["p_neutral"], row["p_positive"]] == [0.9, 0.1, 0.0]

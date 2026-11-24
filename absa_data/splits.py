@@ -77,3 +77,25 @@ def mark_entity_seen(pairs: pd.DataFrame) -> pd.Series:
         index=pairs.index,
         name="entity_seen_in_train",
     )
+
+
+def connected_groups(texts: pd.DataFrame, keys: list[str]) -> pd.Series:
+    """Group id per text: texts sharing a value in any of `keys` columns end up in one group
+    (union-find). FinEntity uses paragraph_id + near-duplicate key, so a boilerplate sentence
+    repeated in two paragraphs pulls both paragraphs into the same split."""
+    parent: dict[str, str] = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for row in texts[keys].itertuples(index=False):
+        nodes = [f"{k}={v}" for k, v in zip(keys, row)]
+        for n in nodes[1:]:
+            ra, rb = find(nodes[0]), find(n)
+            if ra != rb:
+                parent[rb] = ra
+    roots = texts[keys[0]].map(lambda v: find(f"{keys[0]}={v}"))
+    return roots.map(lambda r: "g-" + hashlib.sha1(r.encode()).hexdigest()[:12])

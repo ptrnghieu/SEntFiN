@@ -58,23 +58,33 @@ def _records(df: pd.DataFrame) -> list[dict]:
     return [dict(zip(cols, map(_clean, row))) for row in df.itertuples(index=False, name=None)]
 
 
-def _grouped(df: pd.DataFrame):
-    """Yield (text_id, pairs) in order of first appearance; pairs ordered by position in
-    the text, targets without a span last (stable, so annotation order breaks ties)."""
+def _grouped(df: pd.DataFrame, texts: pd.DataFrame | None = None):
+    """Yield (text record, pairs) per text; pairs ordered by position in the text (stable).
+
+    With `texts`, every text is yielded, including those without any target (FinEntity
+    sentences without an entity: true negatives for extraction)."""
     groups: dict[str, list[dict]] = {}
     for r in _records(df):
         groups.setdefault(r["text_id"], []).append(r)
-    for text_id, rs in groups.items():
+    for rs in groups.values():
         rs.sort(key=lambda r: (r["start"] is None, r["start"] or 0))
-        yield text_id, rs
+    if texts is None:
+        for text_id, rs in groups.items():
+            yield {"text_id": text_id, "source": rs[0]["source"], "text_type": rs[0]["text_type"],
+                   "text": rs[0]["text"], "target_annotation": rs[0].get("target_annotation")}, rs
+    else:
+        for t in _records(texts):
+            yield t, groups.get(t["text_id"], [])
 
 
 _PAIR_FIELDS = ("uid", "source", "text_id", "text_type", "text", "target", "start", "end",
                 "polarity", "label", "label_type", "p_negative", "p_neutral", "p_positive", "label_confidence",
                 "score", "polarity_finben", "aspect", "aspect_l1", "aspect_source", "aspect_confidence",
-                "fiqa_aspect", "entity_seen_in_train", "quality_flags")
+                "fiqa_aspect", "target_source", "sentiment_source", "target_type", "target_annotation",
+                "paragraph_id", "entity_seen_in_train", "quality_flags")
 _TARGET_FIELDS = ("target", "start", "end", "polarity", "label_type", "p_negative", "p_neutral", "p_positive",
-                  "aspect", "aspect_source", "score", "polarity_finben", "fiqa_aspect")
+                  "aspect", "aspect_source", "target_source", "sentiment_source", "target_type", "score",
+                  "polarity_finben", "fiqa_aspect")
 
 
 def _pack_soft(r: dict) -> dict:
@@ -90,25 +100,35 @@ def pair_records(df: pd.DataFrame):
         yield _pack_soft(r)
 
 
-def sentence_records(df: pd.DataFrame):
-    for text_id, rs in _grouped(df):
+def sentence_records(df: pd.DataFrame, texts: pd.DataFrame | None = None):
+    for t, rs in _grouped(df, texts):
         yield {
-            "text_id": text_id,
-            "source": rs[0]["source"],
-            "text_type": rs[0]["text_type"],
-            "text": rs[0]["text"],
+            "text_id": t["text_id"],
+            "source": t["source"],
+            "text_type": t["text_type"],
+            "text": t["text"],
+            "paragraph_id": t.get("paragraph_id"),
+            "sent_idx": t.get("sent_idx"),
+            "target_annotation": t.get("target_annotation"),
             "targets": [_pack_soft({k: r[k] for k in _TARGET_FIELDS if k in r}) for r in rs],
         }
 
 
-def instruct_records(df: pd.DataFrame, task: str):
+def instruct_records(df: pd.DataFrame, task: str, texts: pd.DataFrame | None = None):
+    """End-to-end tasks (e2e, e2e_aspect) only use texts whose targets are exhaustive or LLM-completed:
+    with partial gold the answer would teach the model to skip real targets."""
     with_aspect = task in ("aspect", "e2e_aspect")
-    for text_id, rs in _grouped(df):
+    e2e = task.startswith("e2e")
+    for t, rs in _grouped(df, texts if e2e else None):
+        text_id = t["text_id"]
+        if e2e and t.get("target_annotation") not in ("exhaustive", "llm_completed"):
+            continue
+        if not e2e and not rs:
+            continue
         if with_aspect and any(r["aspect"] is None for r in rs):
             continue
-        first = rs[0]
-        kind = _KIND.get(first["text_type"], "text")
-        text = f"Text: {first['text']}\n"
+        kind = _KIND.get(t["text_type"], "text")
+        text = f"Text: {t['text']}\n"
         targets = f"Targets: {json.dumps([r['target'] for r in rs], ensure_ascii=False)}\n\n"
         if with_aspect:
             answer = [{"target": r["target"], "aspect": r["aspect"], "sentiment": r["polarity"]} for r in rs]
@@ -151,21 +171,25 @@ def instruct_records(df: pd.DataFrame, task: str):
         }
 
 
-def export_dataset(pairs: pd.DataFrame, out_dir: str | Path, e2e: bool) -> dict[str, int]:
+def export_dataset(pairs: pd.DataFrame, out_dir: str | Path, texts: pd.DataFrame | None = None) -> dict[str, int]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    pairs = pairs[PAIR_COLUMNS]
+    pairs = pairs[[c for c in PAIR_COLUMNS if c in pairs]]
     pairs.to_parquet(out / "pairs.parquet", index=False)
     pairs.to_csv(out / "pairs.csv", index=False)
+    if texts is not None:
+        texts.to_parquet(out / "texts.parquet", index=False)
+    complete = texts is not None and texts["target_annotation"].isin(["exhaustive", "llm_completed"]).any()
+    has_aspect = pairs["aspect"].notna().any()
+    tasks = ["atsc"] + (["e2e"] if complete else []) + (["aspect"] if has_aspect else []) + (
+        ["e2e_aspect"] if complete and has_aspect else [])
     counts = {}
     for split in SPLITS:
         part = pairs[pairs["split"] == split]
+        tpart = texts[texts["split"] == split] if texts is not None else None
         counts[f"pairs_{split}"] = _write_jsonl(pair_records(part), out / f"pairs_{split}.jsonl")
-        counts[f"sentences_{split}"] = _write_jsonl(sentence_records(part), out / f"sentences_{split}.jsonl")
-        counts[f"instruct_atsc_{split}"] = _write_jsonl(instruct_records(part, "atsc"), out / f"instruct_atsc_{split}.jsonl")
-        tasks = ["e2e"] if e2e else []
-        if pairs["aspect"].notna().any():
-            tasks += ["aspect"] + (["e2e_aspect"] if e2e else [])
+        counts[f"sentences_{split}"] = _write_jsonl(sentence_records(part, tpart), out / f"sentences_{split}.jsonl")
         for task in tasks:
-            counts[f"instruct_{task}_{split}"] = _write_jsonl(instruct_records(part, task), out / f"instruct_{task}_{split}.jsonl")
+            counts[f"instruct_{task}_{split}"] = _write_jsonl(instruct_records(part, task, tpart),
+                                                              out / f"instruct_{task}_{split}.jsonl")
     return counts

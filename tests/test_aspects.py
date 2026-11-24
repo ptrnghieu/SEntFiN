@@ -42,6 +42,7 @@ def test_taxonomy_is_consistent():
     ("Stock/IPO", "Stock/IPO & Listing"),
     ("Stock/IPOX", None),                            # prefix must end at a path boundary
     (None, None),
+    (float("nan"), None),
 ])
 def test_map_fiqa_aspect(path, expected):
     assert map_fiqa_aspect(path) == expected

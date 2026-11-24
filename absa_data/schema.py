@@ -13,6 +13,12 @@ PAIR_COLUMNS = [
     "uid",              # stable id of the pair: <text_id>#<k>
     "source",           # "sentfin" | "fiqa"
     "text_id",          # stable id of the text (several pairs can share it)
+    "paragraph_id",     # FinEntity: source paragraph of the sentence; otherwise = text_id
+    "target_annotation",  # exhaustive (every target annotated) | llm_completed (gold + LLM-added) | partial
+    "target_source",    # gold | llm (target added by LLM completion)
+    "sentiment_source",  # gold | llm (sentiment of an LLM-added target, bridge annotator)
+    "target_type",      # company, index_market, currency, commodity, sector, regulator_government, ... (LLM)
+    "target_confidence",  # LLM self-reported confidence for an LLM-added target
     "split",            # train | valid | test
     "text_type",        # "headline" | "post"
     "text",             # cleaned text used for training
@@ -26,7 +32,8 @@ PAIR_COLUMNS = [
     "label",            # LABEL2ID[polarity]
     "score",            # FiQA continuous score in [-1, 1]
     "polarity_finben",  # FiQA only: class under FinBen's thresholds (±0.1), for comparison with published results
-    "label_type",       # "hard" (SEntFiN: annotated class) | "soft" (FiQA: derived from a noisy score)
+    "label_type",       # hard (annotated class) | soft (FiQA: noisy score) | silver (bridge LLM, LLM-added target)
+    "sentiment_confidence",  # bridge LLM confidence (silver rows only)
     "p_negative",       # soft label: P(negative); see calibration.py for the noise models
     "p_neutral",        # soft label: P(neutral)
     "p_positive",       # soft label: P(positive)
@@ -44,4 +51,11 @@ PAIR_COLUMNS = [
     "group_id",         # near-duplicate cluster; never split across train/valid/test
     "entity_seen_in_train",  # entity_id occurs in this source's train split
     "quality_flags",    # ';'-separated data-quality flags (see README)
+]
+
+# One row per text (sentence / headline / post), including texts without any target
+# (FinEntity sentences with no entity are true negatives for target extraction).
+TEXT_COLUMNS = [
+    "text_id", "source", "split", "text_type", "text", "paragraph_id", "sent_idx",
+    "target_annotation", "n_targets", "group_id",
 ]

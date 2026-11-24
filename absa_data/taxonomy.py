@@ -236,8 +236,9 @@ FIQA_PREFIX_MAP: tuple[tuple[str, str | None], ...] = (
 
 
 def map_fiqa_aspect(path: str | None) -> str | None:
-    """Unified label for a (normalized) FiQA aspect path, or None if ambiguous."""
-    if not path:
+    """Unified label for a (normalized) FiQA aspect path, or None if ambiguous or missing
+    (LLM-added FiQA targets have no FiQA aspect; read back from parquet that is NaN, not None)."""
+    if not isinstance(path, str) or not path:
         return None
     best = None
     for prefix, label in FIQA_PREFIX_MAP:

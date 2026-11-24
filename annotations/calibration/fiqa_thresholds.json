@@ -1,21 +1,31 @@
 {
  "neg_below": -0.1,
- "pos_from": 0.24,
+ "pos_from": 0.22,
+ "fitted_on": "FiQA train+valid",
+ "heldout_test_agreement": {
+  "finben": 0.7821,
+  "chosen": 0.8077
+ },
+ "bridge_flip_by_confidence": {
+  "high": 0.071,
+  "low": 0.667,
+  "medium": 0.427
+ },
  "fitted": {
   "neg_below": -0.01,
-  "pos_from": 0.24
+  "pos_from": 0.22
  },
  "neg_below_95ci": [
-  -0.14,
+  -0.161,
   0.0
  ],
  "pos_from_95ci": [
-  0.16,
+  0.179,
   0.28
  ],
- "fit_accuracy": 0.7843,
- "chosen_accuracy": 0.7826,
- "fiqa_pairs": 1173,
+ "fit_accuracy": 0.7774,
+ "chosen_accuracy": 0.7732,
+ "fiqa_pairs": 939,
  "bridge": "llm:gpt-6-luna@s1-712b7e41",
  "bridge_vs_sentfin_accuracy": 0.8394,
  "fiqa_score_sigma": 0.083,

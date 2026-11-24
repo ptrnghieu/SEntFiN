@@ -7,9 +7,10 @@ Dataset and codes for SEntFiN 1.0
 
 ## Data pipeline for aspect/target-based financial sentiment (`absa_data/`)
 
-`absa_data` cleans **SEntFiN 1.0** and **FiQA 2018 Task 1**
-([`TheFinAI/en-fiqa-absa`](https://huggingface.co/datasets/TheFinAI/en-fiqa-absa)) and maps both
-onto one *(text, target, polarity)* schema. It then builds leakage-safe splits, exports
+`absa_data` cleans **SEntFiN 1.0**, **FiQA 2018 Task 1**
+([`TheFinAI/en-fiqa-absa`](https://huggingface.co/datasets/TheFinAI/en-fiqa-absa)) and **FinEntity**
+([`yixuantt/FinEntity`](https://huggingface.co/datasets/yixuantt/FinEntity)) and maps them onto one
+*(text, target, polarity)* schema. It then builds leakage-safe splits, exports
 ready-to-train files for encoder and LLM fine-tuning, and writes a data profile.
 
 * **Which dataset to use, and why:** [`reports/DATASET_COMPARISON.md`](reports/DATASET_COMPARISON.md)
@@ -64,7 +65,7 @@ Labels: `negative=0, neutral=1, positive=2`.
 
 Sentiment labels are harmonized across the two sources:
 * SEntFiN's classes are **hard**; FiQA's come from a noisy **score**.
-* FiQA scores are cut at `negative < -0.1 ≤ neutral < 0.24 ≤ positive`, a cut calibrated to
+* FiQA scores are cut at `negative < -0.1 ≤ neutral < 0.22 ≤ positive`, a cut calibrated to
   SEntFiN's notion of neutral (see below). FinBen's ±0.1 cut is kept in `polarity_finben`, and the
   raw `score` is kept too.
 * Every pair also gets a soft label, `soft_label` = [P(neg), P(neu), P(pos)].
@@ -129,7 +130,8 @@ Summary and training recipes: the "Hard vs soft sentiment labels" section of
 
 * **Calibration.** An LLM taught SEntFiN's conventions acts as a bridge annotator: it scores
   83.9 % against SEntFiN gold on valid, and labels FiQA, which places FiQA's neutral/positive cut
-  at 0.24 instead of 0.1. FiQA labels are still computed from the human scores. To re-run it:
+  at 0.22 instead of 0.1 (fitted on FiQA train + valid only). FiQA labels are still computed from
+  the human scores. To re-run it:
 
   ```bash
   python -m absa_data annotate --task sentiment --source sentfin --splits valid
@@ -162,6 +164,46 @@ python -m absa_data push-hub --repo <user>/<name>
   FiQA's terms (cite FinBen), and only then made public. It refuses to publish FiQA ungated.
 * `--private` keeps the repo private; `--dry-run` only stages the files under `data/hub_staging/`.
 
+### Targets: FinEntity and LLM completion
+
+* **FinEntity** is the only source whose targets are exhaustive.
+  * It is loaded from the Hub at a pinned revision, or locally with `--finentity-path`; skip it
+    with `--no-finentity`.
+  * Spans are repaired, Reuters codes removed, and paragraphs split into sentences with the
+    crawler's splitter (vendored in `absa_data/sentsplit.py`).
+  * Sentences without any entity are kept in `texts.parquet` and in the `sentences` /
+    end-to-end exports.
+* **SEntFiN and FiQA** only label some targets, so an LLM lists the missing ones:
+
+  ```bash
+  python -m absa_data complete-targets --source finentity --validate --splits valid test
+  ```
+
+  ```bash
+  python -m absa_data complete-targets --source sentfin
+  ```
+
+  ```bash
+  python -m absa_data complete-targets --source fiqa
+  ```
+
+  Then label the added targets:
+
+  ```bash
+  python -m absa_data annotate --task sentiment --llm-targets --source sentfin
+  ```
+
+  ```bash
+  python -m absa_data annotate --source sentfin
+  ```
+
+  * The first command checks the method on FinEntity; results are in
+    [`reports/target_completion_validation.md`](reports/target_completion_validation.md).
+  * Completions are cached in `annotations/completion/`; sentiment of added targets in
+    `annotations/llm_sentiment/`.
+  * Added targets carry `target_source = llm` and `label_type = silver`; gold rows are never
+    changed.
+
 ### Splits
 
 * **FiQA:** the official train/valid/test splits.
@@ -177,8 +219,9 @@ python -m absa_data push-hub --repo <user>/<name>
 ### Unified schema (`absa_data/schema.py`)
 
 `uid, source, text_id, split, text_type, text, text_raw, target, target_raw, start, end,
-span_match, polarity, label, score, polarity_finben, label_type, p_negative, p_neutral, p_positive,
-label_confidence, aspect, aspect_l1, aspect_source, aspect_confidence,
+span_match, polarity, label, score, polarity_finben, label_type, sentiment_confidence, p_negative,
+p_neutral, p_positive, label_confidence, paragraph_id, target_annotation, target_source,
+sentiment_source, target_type, target_confidence, aspect, aspect_l1, aspect_source, aspect_confidence,
 fiqa_aspect, fiqa_aspect_l1, fiqa_aspect_l2, entity_id, n_targets, is_mixed, group_id,
 entity_seen_in_train, quality_flags`
 
@@ -205,16 +248,20 @@ entity_seen_in_train, quality_flags`
 | `absa_data/review.py` | blind review sheet, agreement metrics |
 | `absa_data/aspects.py` | attach LLM and human aspect labels to the pairs |
 | `absa_data/calibration.py` | soft sentiment labels, noise estimates, FiQA threshold calibration |
+| `absa_data/finentity.py`, `sentsplit.py` | FinEntity loader; crawler's normalizer and sentence splitter |
+| `absa_data/completion.py` | LLM target completion, validation on FinEntity |
 | `absa_data/hub.py` | Hugging Face Hub staging, dataset card, gated upload |
 | `absa_data/splits.py` | grouped stratified split, manifest, leakage checks |
 | `absa_data/export.py` | JSONL / parquet writers and prompt templates |
 | `absa_data/profile.py` | `reports/data_profile.md` |
-| `absa_data/cli.py` | `python -m absa_data build / annotate / review-sheet / review-eval / calibrate / push-hub` |
+| `absa_data/cli.py` | `python -m absa_data build / annotate / complete-targets / review-sheet / review-eval / calibrate / push-hub` |
 
 ### Citations
 
 * SEntFiN: Sinha, Kedas, Kumar & Malo, *SEntFiN 1.0: Entity-aware sentiment analysis for
   financial news*, JASIST, 2022.
 * FiQA: Maia et al., *WWW'18 Open Challenge: Financial Opinion Mining and Question Answering*, 2018.
+* FinEntity: Tang et al., *FinEntity: Entity-level Sentiment Classification for Financial Texts*,
+  EMNLP 2023 (ODC-BY).
 * The FiQA access terms require citing FinBen: Xie et al., *FinBen: A Holistic Financial Benchmark
   for Large Language Models*, arXiv:2402.12659.
