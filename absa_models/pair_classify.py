@@ -98,9 +98,10 @@ def predict(model, data, idx, batch_size, pad_id) -> np.ndarray:
     return np.concatenate(out) if out else np.zeros((0, 1))
 
 
-def report(df: pd.DataFrame, probs: np.ndarray, task: str) -> dict:
+def report(df: pd.DataFrame, probs: np.ndarray | None, task: str, pred=None) -> dict:
+    """Test/valid metrics from class probabilities, or from predicted labels (`pred`)."""
     labels = SENTIMENTS if task == "sentiment" else ASPECTS
-    df = df.assign(pred=[labels[i] for i in probs.argmax(1)])
+    df = df.assign(pred=list(pred) if pred is not None else [labels[i] for i in probs.argmax(1)])
     gold_col = "polarity" if task == "sentiment" else "aspect"
     subsets = {"all": df}
     for s in sorted(df["source"].unique()):

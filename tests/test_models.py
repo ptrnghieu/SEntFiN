@@ -77,3 +77,9 @@ def test_span_metrics():
     from absa_models.common import span_metrics
     m = span_metrics([{(0, 5), (6, 9)}, set()], [{(0, 5)}, {(1, 2)}])
     assert (m["tp"], m["precision"], m["recall"]) == (1, 0.5, 0.5)
+
+
+def test_cls_metrics_macro_ignores_absent_classes():
+    from absa_models.common import cls_metrics
+    m = cls_metrics(["a", "a", "b"], ["a", "a", "b"], ["a", "b", "c", "d"])
+    assert m["macro_f1"] == 1.0 and m["n_classes"] == 2

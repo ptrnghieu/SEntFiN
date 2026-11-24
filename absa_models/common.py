@@ -67,13 +67,18 @@ def load_encoder(name: str):
 # ----------------------------------------------------------------------------- metrics
 
 def cls_metrics(y, yhat, labels) -> dict:
+    """Accuracy and macro-F1. Macro-F1 averages over the classes that occur in the gold or the
+    predictions of this subset: a class absent from both would otherwise count as F1 = 0 and
+    drag the average down (e.g. FiQA's human aspects cover 12 of the 21 categories)."""
     y, yhat = list(y), list(yhat)
     if not y:
         return {"n": 0}
+    present = [l for l in labels if l in set(y) | set(yhat)]
     return {"n": len(y), "accuracy": round(accuracy_score(y, yhat), 4),
-            "macro_f1": round(f1_score(y, yhat, labels=list(labels), average="macro", zero_division=0), 4),
+            "macro_f1": round(f1_score(y, yhat, labels=present, average="macro", zero_division=0), 4),
+            "n_classes": len(present),
             "per_class_f1": {l: round(v, 4) for l, v in zip(labels, f1_score(
-                y, yhat, labels=list(labels), average=None, zero_division=0))}}
+                y, yhat, labels=list(labels), average=None, zero_division=0)) if l in present}}
 
 
 def span_metrics(gold: list[set], pred: list[set]) -> dict:
