@@ -185,6 +185,7 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=3e-5)
+    ap.add_argument("--head-lr", type=float, help="LR for the head / CRF (default: --lr)")
     ap.add_argument("--max-length", type=int, default=128)
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--seed", type=int, default=42)
@@ -222,7 +223,7 @@ def main(argv=None):
         res, _ = evaluate(model, valid, tags, args.batch_size, tok.pad_token_id, dev)
         return res[key][score_key], res
 
-    log = train_loop(model, train_batches, val, epochs=args.epochs, lr=args.lr, patience=args.patience, out=out)
+    log = train_loop(model, train_batches, val, epochs=args.epochs, lr=args.lr, head_lr=args.head_lr, patience=args.patience, out=out)
     test_res, preds = evaluate(model, test, tags, args.batch_size, tok.pad_token_id, dev)
     valid_res, _ = evaluate(model, valid, tags, args.batch_size, tok.pad_token_id, dev)
     write_results(out, {"config": {**vars(args), **log}, "valid": valid_res, "test": test_res},

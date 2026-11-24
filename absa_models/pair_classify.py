@@ -144,6 +144,7 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-5)
+    ap.add_argument("--head-lr", type=float, help="LR for the head / CRF (default: --lr)")
     ap.add_argument("--max-length", type=int, default=128)
     ap.add_argument("--patience", type=int, default=2)
     ap.add_argument("--seed", type=int, default=42)
@@ -190,7 +191,7 @@ def main(argv=None):
         key = "all, gold sentiment only" if args.task == "sentiment" else "all"
         return res[key].get("macro_f1", 0.0), res
 
-    log = train_loop(model, train_batches, val, epochs=args.epochs, lr=args.lr, patience=args.patience, out=out)
+    log = train_loop(model, train_batches, val, epochs=args.epochs, lr=args.lr, head_lr=args.head_lr, patience=args.patience, out=out)
     probs = predict(model, data["te"], np.arange(len(te)), args.batch_size, pad)
     test_res = report(te, probs, args.task)
     valid_res = val()[1]

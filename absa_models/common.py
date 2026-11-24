@@ -116,20 +116,26 @@ def _metric_keys(block: dict) -> list[str]:
 
 # ----------------------------------------------------------------------------- training loop
 
-def train_loop(model, train_batches, evaluate, *, epochs: int, lr: float, weight_decay: float = 0.01,
-               warmup: float = 0.1, patience: int = 2, grad_clip: float = 1.0, out: Path, log=print) -> dict:
+def train_loop(model, train_batches, evaluate, *, epochs: int, lr: float, head_lr: float | None = None,
+               weight_decay: float = 0.01, warmup: float = 0.1, patience: int = 2, grad_clip: float = 1.0,
+               out: Path, log=print) -> dict:
     """Generic loop: `train_batches()` yields dicts the model's `loss(batch)` accepts;
     `evaluate()` returns (score, details) on the validation set, higher is better.
+    `head_lr` (default: `lr`) applies to everything outside `model.encoder`, i.e. the
+    classification head and CRF transitions, which learn far too slowly at BERT's 2e-5.
     Keeps the best state in memory and on disk (`best.pt`)."""
     dev = device()
     model.to(dev)
     steps_per_epoch = sum(1 for _ in train_batches())
     total = max(1, steps_per_epoch * epochs)
     no_decay = ("bias", "LayerNorm.weight", "layer_norm.weight")
-    params = [{"params": [p for n, p in model.named_parameters() if not any(k in n for k in no_decay)],
-               "weight_decay": weight_decay},
-              {"params": [p for n, p in model.named_parameters() if any(k in n for k in no_decay)],
-               "weight_decay": 0.0}]
+    params = []
+    for is_enc, group_lr in ((True, lr), (False, head_lr or lr)):
+        for decay in (True, False):
+            ps = [p for n, p in model.named_parameters()
+                  if n.startswith("encoder.") == is_enc and any(k in n for k in no_decay) != decay]
+            if ps:
+                params.append({"params": ps, "lr": group_lr, "weight_decay": weight_decay if decay else 0.0})
     opt = torch.optim.AdamW(params, lr=lr)
     warm = int(warmup * total)
     sched = torch.optim.lr_scheduler.LambdaLR(
