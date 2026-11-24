@@ -250,6 +250,8 @@ On a GPU (Colab: Runtime > Change runtime type > T4 GPU), run each step as its o
    bash scripts/run_baselines.sh
    ```
 
+On **Kaggle**, use [`notebooks/kaggle_baselines.ipynb`](notebooks/kaggle_baselines.ipynb). It reads the Hugging Face token from a Kaggle secret named `HF_TOKEN`; GPU T4 and internet must be enabled. Run it with *Save & Run All (Commit)*, so it keeps running in the background.
+
 `tests/test_models.py` checks the code on CPU with a tiny random BERT: tags round-trip to the gold
 spans, and every model can overfit a small set.
 
