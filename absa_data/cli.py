@@ -558,6 +558,32 @@ def eda(args) -> None:
     print(f"report: {out}")
 
 
+def vnnews(args) -> None:
+    from . import vnnews as vn
+    from .annotate import make_client
+
+    texts = vn.load_sentences(args.input)
+    print(f"{len(texts)} sentences from {texts['paragraph_id'].nunique()} articles ({args.input})")
+    stats = None
+    if not args.no_llm:
+        stats = vn.label(texts, Path(args.annotations_dir), make_client(), workers=args.workers)
+        for k, v in stats.items():
+            print(f"  {k}: {v.get('input_tokens', 0):,} in / {v.get('output_tokens', 0):,} out tokens, "
+                  f"failed {v.get('texts_failed', v.get('pairs_failed', 0))}, errors {v.get('errors', [])[:3]}")
+    aliases = load_alias_table(args.entity_list) if Path(args.entity_list).exists() else None
+    pairs, texts = vn.build_tables(texts, Path(args.annotations_dir), Path(args.split_manifest), args.n_test, aliases)
+    out = Path(args.out) / vn.SOURCE
+    out.mkdir(parents=True, exist_ok=True)
+    pairs.to_parquet(out / "pairs.parquet", index=False)
+    texts.to_parquet(out / "texts.parquet", index=False)
+    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.report).write_text(vn.profile(pairs, texts, stats), encoding="utf-8")
+    print(f"{len(pairs)} triplets -> {out}; report: {args.report}")
+    if args.review_dir:
+        res = vn.write_review_set(pairs, texts, Path(args.review_dir), args.reviewers, args.overlap)
+        print(json.dumps(res, indent=1))
+
+
 def _data_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sentfin-csv", default="SEntFiN.csv")
     p.add_argument("--entity-list", default="entity_list_comprehensive.csv")
@@ -656,11 +682,25 @@ def main(argv=None) -> None:
     h.add_argument("--message", help="commit message on the Hub")
     h.add_argument("--dry-run", action="store_true", help="stage files and card only; upload nothing")
 
+    v = sub.add_parser("vnnews", help="LLM triplet pre-labels + review workbooks for the crawled Vietnam news")
+    v.add_argument("--input", default="../minhhai205/aspect-based-fsa/data/sentences_clean.json")
+    v.add_argument("--annotations-dir", default="annotations")
+    v.add_argument("--entity-list", default="entity_list_comprehensive.csv")
+    v.add_argument("--split-manifest", default="splits/vnnews_split_v1.csv")
+    v.add_argument("--n-test", type=int, default=300, help="test (= human review) sentences, whole articles")
+    v.add_argument("--no-llm", action="store_true", help="only rebuild tables from the cached labels")
+    v.add_argument("--workers", type=int, default=6)
+    v.add_argument("--out", default="data/processed")
+    v.add_argument("--report", default="reports/vnnews_labels.md")
+    v.add_argument("--review-dir", default="annotations/review", help="'' to skip the review workbooks")
+    v.add_argument("--reviewers", type=int, default=3)
+    v.add_argument("--overlap", type=int, default=30, help="sentences every reviewer labels (agreement)")
+
     args = ap.parse_args(argv)
     if getattr(args, "reasoning_effort", None) == "":
         args.reasoning_effort = None
     {"build": build, "annotate": annotate, "review-sheet": review_sheet, "review-eval": review_eval,
-     "calibrate": calibrate, "push-hub": push_hub, "complete-targets": complete_targets, "eda": eda}[args.cmd](args)
+     "calibrate": calibrate, "push-hub": push_hub, "complete-targets": complete_targets, "eda": eda, "vnnews": vnnews}[args.cmd](args)
 
 
 if __name__ == "__main__":

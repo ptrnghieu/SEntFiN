@@ -207,6 +207,33 @@ python -m absa_data push-hub --repo <user>/<name>
   * Added targets carry `target_source = llm` and `label_type = silver`; gold rows are never
     changed.
 
+### In-domain data: Vietnam news (`absa_data/vnnews.py`)
+
+The deployment domain is English-language Vietnamese news crawled by
+[minhhai205/aspect-based-FSA](https://github.com/minhhai205/aspect-based-FSA)
+(`data/sentences_clean.json`: one record per sentence, no labels). One command pre-labels
+every sentence with (target, sentiment, aspect) triplets and writes the review workbooks:
+
+```bash
+OPENAI_API_KEY=... python -m absa_data vnnews        # --no-llm: rebuild from the cached labels only
+```
+
+- **Labels** (all silver, `gpt-6-luna`, cached in `annotations/vnnews/`): targets with the
+  target-completion prompt and no given targets (validated on FinEntity: recall 94%,
+  in-scope precision 88%), then the same sentiment and 21-category aspect prompts as the
+  training data. The text is kept exactly as crawled, so spans line up with the crawler's offsets.
+- **Split** (`splits/vnnews_split_v1.csv`, frozen): whole articles, plus near-duplicate
+  sentences across articles, go to one split. About 300 sentences form `test`, the rest is
+  90/10 `train`/`valid`.
+- **Human review of the test split**: `annotations/review/vnnews_test_review_v1_R{1,2,3}.xlsx`,
+  one workbook per reviewer. The LLM's triplets are pre-filled: set `keep` to `n` for a
+  non-target, fill `sentiment_fix` / `aspect_fix` only when a label is wrong, add missed
+  targets on the `missing_targets` sheet. The rows with a blue `sent_id` (about 30 sentences)
+  appear in every workbook, so agreement between reviewers can be measured; label them
+  independently.
+- Outputs: `data/processed/vnnews/{pairs,texts}.parquet` (same schema as the other sources,
+  with `publisher` and `day` on texts) and `reports/vnnews_labels.md`.
+
 ### Baselines: single-task FinBERT (steps 1a-1c)
 
 Package `absa_models/`; backbone `yiyanghkust/finbert-pretrain` by default (`--model` to change).
