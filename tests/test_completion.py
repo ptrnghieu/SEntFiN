@@ -104,3 +104,10 @@ def test_validation_scoring():
     res = c.score_validation(recs, {"a": ["Cineworld Group", "Spirit"], "b": []}, {"a": ["x"], "b": []})
     assert res["recall_exact"] == 0.5 and res["precision"] == pytest.approx(1 / 3)
     assert res["precision_in_finentity_scope"] == 0.5 and res["additions_on_empty_texts"] == 1
+
+
+def test_unlinkable_keeps_names_with_the():
+    from absa_data.completion import is_unlinkable
+    assert not is_unlinkable("The Ministry of Finance")
+    assert not is_unlinkable("the State Bank of Vietnam (SBV)")
+    assert is_unlinkable("the market") and is_unlinkable("The 30-share index") and is_unlinkable("its unit")

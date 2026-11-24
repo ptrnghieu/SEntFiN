@@ -138,7 +138,9 @@ def render(items: list[Item]) -> str:
     return "\n".join(lines)
 
 
-_ANAPHORIC = re.compile(r"(?i)^(the|this|that|these|those|its|their|his|her|our|a|an)\s")
+# A determiner followed by a lowercase word ('the market', 'its unit'); 'the Ministry of Finance' and
+# 'the State Bank of Vietnam (SBV)' are names, common in Vietnamese English-language news.
+_ANAPHORIC = re.compile(r"^(?i:the|this|that|these|those|its|their|his|her|our|a|an)\s+(?![A-Z])")
 _BARE_GENERIC = {"benchmark", "index", "the index", "company", "firm", "group", "shares", "stock"}
 
 
