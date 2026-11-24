@@ -65,3 +65,24 @@ def test_build_tables_split_and_review(tmp_path):
     sheet = pd.read_excel(res["R1"]["file"], sheet_name="review")
     assert list(sheet.columns) == vn.REVIEW_COLUMNS
     assert set(sheet["sent_id"]) == set(asg["R1"])
+
+
+def test_changed_text_invalidates_cache_and_export(tmp_path):
+    src = _sentences(tmp_path, n_docs=4, per_doc=3)
+    texts = vn.load_sentences(src)
+    ann = tmp_path / "ann"
+    _fake_annotations(texts, ann)
+    vn.save_hashes(texts, ann)
+    pairs, out_texts = vn.build_tables(texts, ann, tmp_path / "split.csv", n_test=3)
+    res = vn.export_labeled(src, pairs, out_texts, tmp_path / "labeled.json")
+    data = json.loads((tmp_path / "labeled.json").read_text())
+    assert res["triplets"] == len(pairs) and all(
+        x["text"][t["start"]:t["end"]] == t["target"] for x in data for t in x["triplets"])
+    assert all(x["split"] in ("train", "valid", "test") for x in data)
+
+    changed_id = texts.loc[1, "text_id"]
+    texts.loc[1, "text"] = "Vingroup  fixed text."
+    assert vn.invalidate_changed(texts, ann) == [changed_id]
+    for key in ("targets", "sentiment", "aspect"):
+        assert changed_id not in vn.ann_paths(ann)[key].read_text()
+    assert vn.invalidate_changed(texts.drop(index=1), ann) == []

@@ -20,6 +20,7 @@ labels (for inter-annotator agreement). Reviewers correct the LLM's triplets in 
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -56,7 +57,36 @@ def load_sentences(path: str | Path) -> pd.DataFrame:
 def ann_paths(annotations_dir: Path) -> dict[str, Path]:
     d = annotations_dir / SOURCE
     return {"targets": d / f"targets_{MODEL}.jsonl", "sentiment": d / f"sentiment_{MODEL}.jsonl",
-            "aspect": d / f"aspect_{MODEL}.jsonl"}
+            "aspect": d / f"aspect_{MODEL}.jsonl", "hashes": d / "text_hashes.json"}
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def invalidate_changed(texts: pd.DataFrame, annotations_dir: Path) -> list[str]:
+    """The crawler may fix a sentence after it was labelled. Labels are cached by sent_id, so drop
+    every cached record of a sentence whose text changed since it was labelled; `label` redoes them."""
+    paths = ann_paths(annotations_dir)
+    old = json.loads(paths["hashes"].read_text()) if paths["hashes"].exists() else {}
+    changed = [t for t, x in zip(texts["text_id"], texts["text"]) if t in old and old[t] != _sha(x)]
+    if changed:
+        bad = set(changed)
+        for key in ("targets", "sentiment", "aspect"):
+            f = paths[key]
+            if f.exists():
+                keep = [l for l in f.read_text(encoding="utf-8").splitlines()
+                        if l.strip() and json.loads(l).get("text_id") not in bad]
+                f.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
+    return changed
+
+
+def save_hashes(texts: pd.DataFrame, annotations_dir: Path) -> None:
+    f = ann_paths(annotations_dir)["hashes"]
+    old = json.loads(f.read_text()) if f.exists() else {}
+    old.update({t: _sha(x) for t, x in zip(texts["text_id"], texts["text"])})
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(dict(sorted(old.items())), indent=0) + "\n")
 
 
 # ----------------------------------------------------------------------------- labelling
@@ -80,12 +110,16 @@ def target_pairs(texts: pd.DataFrame, targets_path: Path) -> pd.DataFrame:
 
 def label(texts: pd.DataFrame, annotations_dir: Path, client, workers: int = 6, log=print) -> dict:
     paths = ann_paths(annotations_dir)
+    changed = invalidate_changed(texts, annotations_dir)
+    if changed:
+        log(f"  {len(changed)} sentences changed since labelling; relabelling them: {changed[:5]}")
     items = [TextItem(r.text_id, r.text, r.text_type, []) for r in texts.itertuples(index=False)]
     stats = {"targets": TargetCompleter(client, model=MODEL).run(items, paths["targets"], workers=workers, log=log)}
     pairs = target_pairs(texts, paths["targets"])
     for task in (SENTIMENT_TASK, ASPECT_TASK):
         stats[task.name] = Annotator(client, model=MODEL, task=task).run(
             pairs, paths[task.name], workers=workers, log=log)
+    save_hashes(texts, annotations_dir)
     return stats
 
 
@@ -342,3 +376,24 @@ def write_review_set(pairs: pd.DataFrame, texts: pd.DataFrame, out_dir: Path, n_
                      "pairs": int(pairs["text_id"].isin(ids).sum())}
     out["overlap_sentences"] = len(overlap)
     return out
+
+
+# ----------------------------------------------------------------------------- export for the crawler repo
+
+def export_labeled(input_path: str | Path, pairs: pd.DataFrame, texts: pd.DataFrame, out_path: Path) -> dict:
+    """sentences_clean.json with two added fields per sentence, in the input's order:
+    ``split`` and ``triplets`` (character offsets index ``text`` exactly as given)."""
+    recs = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    split = dict(zip(texts["text_id"], texts["split"]))
+    by_text: dict[str, list[dict]] = {}
+    for r in pairs.sort_values(["text_id", "start"]).itertuples(index=False):
+        by_text.setdefault(r.text_id, []).append({
+            "target": r.target, "start": int(r.start), "end": int(r.end), "target_type": r.target_type,
+            "sentiment": r.polarity, "sentiment_confidence": r.sentiment_confidence,
+            "aspect": r.aspect, "aspect_l1": r.aspect_l1, "aspect_confidence": r.aspect_confidence,
+            "source": "llm"})
+    out = [{**x, "split": split.get(x["sent_id"]), "triplets": by_text.get(x["sent_id"], [])}
+           for x in recs if x.get("lang") == "en"]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"sentences": len(out), "triplets": sum(len(x["triplets"]) for x in out), "file": str(out_path)}

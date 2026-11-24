@@ -579,6 +579,8 @@ def vnnews(args) -> None:
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     Path(args.report).write_text(vn.profile(pairs, texts, stats), encoding="utf-8")
     print(f"{len(pairs)} triplets -> {out}; report: {args.report}")
+    if args.export_json:
+        print(vn.export_labeled(args.input, pairs, texts, Path(args.export_json)))
     if args.review_dir:
         res = vn.write_review_set(pairs, texts, Path(args.review_dir), args.reviewers, args.overlap)
         print(json.dumps(res, indent=1))
@@ -693,6 +695,8 @@ def main(argv=None) -> None:
     v.add_argument("--out", default="data/processed")
     v.add_argument("--report", default="reports/vnnews_labels.md")
     v.add_argument("--review-dir", default="annotations/review", help="'' to skip the review workbooks")
+    v.add_argument("--export-json", default="annotations/vnnews/sentences_clean_labeled.json",
+                   help="sentences_clean.json + split + triplets per sentence ('' to skip)")
     v.add_argument("--reviewers", type=int, default=3)
     v.add_argument("--overlap", type=int, default=30, help="sentences every reviewer labels (agreement)")
 

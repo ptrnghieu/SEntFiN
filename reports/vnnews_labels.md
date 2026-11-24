@@ -4,24 +4,24 @@ Source: `data/sentences_clean.json` of minhhai205/aspect-based-FSA. Labels: gpt-
 
 | split | sentences | articles | targets | sentences without target |
 |---|---|---|---|---|
-| train | 1238 | 302 | 2641 | 9 |
+| train | 1238 | 302 | 2643 | 9 |
 | valid | 141 | 25 | 317 | 1 |
 | test | 300 | 65 | 663 | 0 |
-| all | 1679 | 392 | 3621 | 10 |
+| all | 1679 | 392 | 3623 | 10 |
 
 ## Sentiment
 
 | value | pairs | share |
 |---|---|---|
-| neutral | 1925 | 53.2% |
-| positive | 1185 | 32.7% |
+| neutral | 1924 | 53.1% |
+| positive | 1188 | 32.8% |
 | negative | 511 | 14.1% |
 
 ## Sentiment confidence
 
 | value | pairs | share |
 |---|---|---|
-| high | 2778 | 76.7% |
+| high | 2780 | 76.7% |
 | medium | 836 | 23.1% |
 | low | 7 | 0.2% |
 
@@ -29,44 +29,44 @@ Source: `data/sentences_clean.json` of minhhai205/aspect-based-FSA. Labels: gpt-
 
 | value | pairs | share |
 |---|---|---|
-| company | 1724 | 47.6% |
+| company | 1725 | 47.6% |
 | regulator_government | 610 | 16.8% |
 | index_market | 409 | 11.3% |
 | sector | 254 | 7.0% |
-| country_economy | 181 | 5.0% |
+| country_economy | 180 | 5.0% |
 | other | 138 | 3.8% |
 | currency | 99 | 2.7% |
 | fund_investor_group | 79 | 2.2% |
-| bonds_rates | 73 | 2.0% |
+| bonds_rates | 75 | 2.1% |
 | commodity | 54 | 1.5% |
 
 ## Aspect, level 1
 
 | value | pairs | share |
 |---|---|---|
-| Corporate | 1229 | 33.9% |
-| Market | 796 | 22.0% |
-| Economy | 795 | 22.0% |
-| Other | 409 | 11.3% |
+| Corporate | 1230 | 33.9% |
+| Market | 799 | 22.1% |
+| Economy | 795 | 21.9% |
+| Other | 407 | 11.2% |
 | Stock | 392 | 10.8% |
 
 ## Aspect
 
 | value | pairs | share |
 |---|---|---|
-| Corporate/Strategy & Operations | 938 | 25.9% |
+| Corporate/Strategy & Operations | 940 | 25.9% |
 | Economy/Regulation & Government Policy | 525 | 14.5% |
-| Other | 409 | 11.3% |
+| Other | 407 | 11.2% |
 | Market/Equity Market | 318 | 8.8% |
 | Stock/Price Movement | 318 | 8.8% |
-| Market/Sectors | 204 | 5.6% |
-| Economy/Macroeconomy & Trade | 145 | 4.0% |
+| Market/Sectors | 205 | 5.7% |
+| Economy/Macroeconomy & Trade | 144 | 4.0% |
 | Corporate/Financial Results | 129 | 3.6% |
-| Economy/Monetary Policy | 125 | 3.5% |
+| Economy/Monetary Policy | 126 | 3.5% |
 | Market/Currencies | 99 | 2.7% |
-| Corporate/Legal & Regulatory | 72 | 2.0% |
+| Corporate/Legal & Regulatory | 71 | 2.0% |
 | Market/Funds & Flows | 65 | 1.8% |
-| Market/Bonds & Rates | 63 | 1.7% |
+| Market/Bonds & Rates | 65 | 1.8% |
 | Stock/Trading Activity & Ownership | 58 | 1.6% |
 | Market/Commodities | 47 | 1.3% |
 | Corporate/Capital & Dividends | 45 | 1.2% |
@@ -87,7 +87,7 @@ Source: `data/sentences_clean.json` of minhhai205/aspect-based-FSA. Labels: gpt-
 | Ministry of Industry and Trade | 69 |
 | SABECO | 68 |
 | Vinamilk | 60 |
-| Việt Nam | 57 |
+| Việt Nam | 56 |
 | Petrovietnam | 49 |
 | Ministry of Finance | 48 |
 | Vietnam | 41 |
@@ -96,8 +96,8 @@ Source: `data/sentences_clean.json` of minhhai205/aspect-based-FSA. Labels: gpt-
 | Viettel | 35 |
 | HoSE | 34 |
 | Vietnam Airlines | 33 |
+| BIDV | 27 |
 | State Bank of Vietnam (SBV) | 26 |
-| BIDV | 26 |
 | stock market | 26 |
 | VIFC | 25 |
 | HDBank | 25 |
@@ -105,28 +105,3 @@ Source: `data/sentences_clean.json` of minhhai205/aspect-based-FSA. Labels: gpt-
 | banks | 24 |
 | State Bank of Vietnam | 22 |
 | VIB | 22 |
-
-## LLM usage (this run)
-
-```json
-{
- "targets": {
-  "input_tokens": 278218,
-  "output_tokens": 139112,
-  "seconds": 182.3,
-  "invalid_outputs": 0
- },
- "sentiment": {
-  "input_tokens": 254586,
-  "output_tokens": 129950,
-  "seconds": 154.3,
-  "invalid_outputs": 0
- },
- "aspect": {
-  "input_tokens": 502915,
-  "output_tokens": 219885,
-  "seconds": 278.8,
-  "invalid_outputs": 0
- }
-}
-```

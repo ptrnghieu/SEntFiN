@@ -232,7 +232,12 @@ OPENAI_API_KEY=... python -m absa_data vnnews        # --no-llm: rebuild from th
   appear in every workbook, so agreement between reviewers can be measured; label them
   independently.
 - Outputs: `data/processed/vnnews/{pairs,texts}.parquet` (same schema as the other sources,
-  with `publisher` and `day` on texts) and `reports/vnnews_labels.md`.
+  with `publisher` and `day` on texts), `reports/vnnews_labels.md`, and
+  `annotations/vnnews/sentences_clean_labeled.json`: the crawler's file in its own format and
+  order, with `split` and `triplets` (target, start, end, target_type, sentiment, aspect,
+  confidences) added to every sentence.
+- When the crawler fixes a sentence after labelling, its cached labels are dropped and only
+  that sentence is labelled again (`annotations/vnnews/text_hashes.json`).
 
 ### Baselines: single-task FinBERT (steps 1a-1c)
 
