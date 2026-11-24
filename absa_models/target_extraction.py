@@ -23,7 +23,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from .common import SOURCES, load_table, set_seed, span_metrics, train_loop, write_results
+from .common import SOURCES, load_encoder, load_tokenizer, load_table, set_seed, span_metrics, train_loop, write_results
 
 POLARITIES = ("negative", "neutral", "positive")
 
@@ -86,8 +86,7 @@ def batches(items: list[dict], batch_size: int, pad_id: int, shuffle: bool, seed
 class Tagger(nn.Module):
     def __init__(self, model_name: str, n_tags: int, crf: bool, dropout: float = 0.1):
         super().__init__()
-        from transformers import AutoModel
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = load_encoder(model_name)
         self.dropout = nn.Dropout(dropout)
         self.head = nn.Linear(self.encoder.config.hidden_size, n_tags)
         self.crf = None
@@ -193,12 +192,11 @@ def main(argv=None):
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     set_seed(args.seed)
-    from transformers import AutoTokenizer
 
     processed = Path(args.processed)
     srcs = sorted(set(args.train_sources) | set(args.eval_sources))
     texts, pairs = load_table(processed, "texts", srcs), load_table(processed, "pairs", srcs)
-    tok = AutoTokenizer.from_pretrained(args.model)
+    tok = load_tokenizer(args.model)
     tags = tag_set(args.scheme)
 
     def split(name, sources):

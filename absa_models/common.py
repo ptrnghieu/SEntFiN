@@ -43,6 +43,27 @@ def load_table(processed: Path, name: str, sources) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def load_tokenizer(name: str):
+    """AutoTokenizer, falling back to a BERT WordPiece tokenizer built from vocab.txt.
+
+    yiyanghkust/finbert-pretrain ships only config.json + vocab.txt (no tokenizer_config),
+    and a config.json without `model_type`, which transformers 5.x cannot resolve through the Auto classes."""
+    from transformers import AutoTokenizer, BertTokenizerFast
+    try:
+        return AutoTokenizer.from_pretrained(name)
+    except (ValueError, OSError):
+        return BertTokenizerFast.from_pretrained(name)
+
+
+def load_encoder(name: str):
+    """AutoModel, falling back to BertModel when config.json lacks `model_type` (finbert-pretrain)."""
+    from transformers import AutoModel, BertModel
+    try:
+        return AutoModel.from_pretrained(name)
+    except ValueError:
+        return BertModel.from_pretrained(name)
+
+
 # ----------------------------------------------------------------------------- metrics
 
 def cls_metrics(y, yhat, labels) -> dict:

@@ -30,7 +30,7 @@ from torch import nn
 from absa_data.taxonomy import LABELS as ASPECTS
 from absa_data.taxonomy import map_fiqa_aspect
 
-from .common import SOURCES, cls_metrics, device, load_table, set_seed, train_loop, write_results
+from .common import SOURCES, load_encoder, load_tokenizer, cls_metrics, device, load_table, set_seed, train_loop, write_results
 
 SENTIMENTS = ("negative", "neutral", "positive")
 MARK_OPEN, MARK_CLOSE = "<t>", "</t>"
@@ -70,8 +70,7 @@ def batches(data: dict, idx, batch_size: int, pad_id: int, shuffle: bool, seed: 
 class PairClassifier(nn.Module):
     def __init__(self, model_name: str, n_labels: int, vocab_size: int, class_weights=None, dropout: float = 0.1):
         super().__init__()
-        from transformers import AutoModel
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = load_encoder(model_name)
         self.encoder.resize_token_embeddings(vocab_size)
         self.dropout = nn.Dropout(dropout)
         self.head = nn.Linear(self.encoder.config.hidden_size, n_labels)
@@ -152,7 +151,6 @@ def main(argv=None):
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     set_seed(args.seed)
-    from transformers import AutoTokenizer
 
     srcs = sorted(set(args.train_sources) | set(args.eval_sources))
     pairs = load_table(Path(args.processed), "pairs", srcs)
@@ -168,7 +166,7 @@ def main(argv=None):
     tr, va, te = (d.reset_index(drop=True) for d in (tr, va, te))
     print(f"{args.task}: train {len(tr)} / valid {len(va)} / test {len(te)} pairs from {args.train_sources}")
 
-    tok = AutoTokenizer.from_pretrained(args.model)
+    tok = load_tokenizer(args.model)
     tok.add_special_tokens({"additional_special_tokens": [MARK_OPEN, MARK_CLOSE]})
     labels = SENTIMENTS if args.task == "sentiment" else ASPECTS
     weights = None
