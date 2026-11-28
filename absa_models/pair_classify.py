@@ -30,7 +30,7 @@ from torch import nn
 from absa_data.taxonomy import LABELS as ASPECTS
 from absa_data.taxonomy import map_fiqa_aspect
 
-from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, cls_metrics, device, load_table, set_seed, train_loop, write_results
+from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, model_tag, cls_metrics, device, load_table, set_seed, train_loop, write_results
 
 SENTIMENTS = ("negative", "neutral", "positive")
 MARK_OPEN, MARK_CLOSE = "<t>", "</t>"
@@ -68,9 +68,10 @@ def batches(data: dict, idx, batch_size: int, pad_id: int, shuffle: bool, seed: 
 
 
 class PairClassifier(nn.Module):
-    def __init__(self, model_name: str, n_labels: int, vocab_size: int, class_weights=None, dropout: float = 0.1):
+    def __init__(self, model_name: str, n_labels: int, vocab_size: int, class_weights=None, dropout: float = 0.1,
+                 encoder=None):
         super().__init__()
-        self.encoder = load_encoder(model_name)
+        self.encoder = encoder if encoder is not None else load_encoder(model_name)
         self.encoder.resize_token_embeddings(vocab_size)
         self.dropout = nn.Dropout(dropout)
         self.head = nn.Linear(self.encoder.config.hidden_size, n_labels)
@@ -78,7 +79,10 @@ class PairClassifier(nn.Module):
                              else torch.ones(n_labels))
 
     def logits(self, batch):
-        h = self.encoder(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]).last_hidden_state[:, 0]
+        out = self.encoder(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+        h = getattr(out, "pooled", None)  # LSTM: attention + max pooling; transformers: the [CLS] vector
+        if h is None:
+            h = out.last_hidden_state[:, 0]
         return self.head(self.dropout(h))
 
     def loss(self, batch):
@@ -142,16 +146,21 @@ def main(argv=None):
                     help="sentiment: train only on pairs with human sentiment (drop LLM-added targets)")
     ap.add_argument("--soft", action="store_true", help="sentiment: train on the soft labels")
     ap.add_argument("--class-weights", action="store_true", help="inverse-frequency class weights")
-    ap.add_argument("--epochs", type=int, default=5)
+    ap.add_argument("--epochs", type=int, help="default 5 (lstm: 15)")
     ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--lr", type=float, default=2e-5)
+    ap.add_argument("--lr", type=float, help="default 2e-5 (lstm: 1e-3)")
     ap.add_argument("--head-lr", type=float, help="LR for the head / CRF (default: --lr)")
     ap.add_argument("--max-length", type=int, default=128)
-    ap.add_argument("--patience", type=int, default=2)
+    ap.add_argument("--patience", type=int, help="default 2 (lstm: 3)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--limit", type=int, help="use at most N pairs per split (smoke tests)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    from . import lstm
+    is_lstm = args.model == lstm.MODEL_NAME
+    args.lr = args.lr or (lstm.DEFAULTS["lr"] if is_lstm else 2e-5)
+    args.epochs = args.epochs or (lstm.DEFAULTS["pair_epochs"] if is_lstm else 5)
+    args.patience = args.patience or (lstm.DEFAULTS["pair_patience"] if is_lstm else 2)
     set_seed(args.seed)
 
     srcs = sorted(set(args.train_sources) | set(args.eval_sources))
@@ -168,7 +177,11 @@ def main(argv=None):
     tr, va, te = (d.reset_index(drop=True) for d in (tr, va, te))
     print(f"{args.task}: train {len(tr)} / valid {len(va)} / test {len(te)} pairs from {args.train_sources}")
 
-    tok = load_tokenizer(args.model)
+    encoder = None
+    if is_lstm:
+        tok, encoder = lstm.build(tr["text"], pd.concat([va["text"], te["text"]]), seed=args.seed)
+    else:
+        tok = load_tokenizer(args.model)
     tok.add_special_tokens({"additional_special_tokens": [MARK_OPEN, MARK_CLOSE]})
     labels = SENTIMENTS if args.task == "sentiment" else ASPECTS
     weights = None
@@ -176,10 +189,10 @@ def main(argv=None):
         col = "polarity" if args.task == "sentiment" else "aspect"
         counts = tr[col].value_counts().reindex(labels, fill_value=0).to_numpy(dtype=float)
         weights = (len(tr) / (len(labels) * np.maximum(counts, 1))).tolist()
-    model = PairClassifier(args.model, len(labels), len(tok), weights)
+    model = PairClassifier(args.model, len(labels), len(tok), weights, encoder=encoder)
     data = {name: encode(tok, d, args.task, args.soft, args.max_length) for name, d in (("tr", tr), ("va", va), ("te", te))}
     pad = tok.pad_token_id
-    out = Path(args.out or f"runs/{args.task}/{'+'.join(args.train_sources)}"
+    out = Path(args.out or f"runs/{args.task}/{model_tag(args.model)}/{'+'.join(args.train_sources)}"
                f"{'-soft' if args.soft else ''}{'-gold' if args.gold_only else ''}{'-cw' if args.class_weights else ''}")
     ep = {"n": 0}
 

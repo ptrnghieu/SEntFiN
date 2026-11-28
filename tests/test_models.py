@@ -83,3 +83,42 @@ def test_cls_metrics_macro_ignores_absent_classes():
     from absa_models.common import cls_metrics
     m = cls_metrics(["a", "a", "b"], ["a", "a", "b"], ["a", "b", "c", "d"])
     assert m["macro_f1"] == 1.0 and m["n_classes"] == 2
+
+
+def test_lstm_tokenizer_offsets_pairs_and_markers():
+    from absa_models.lstm import WordTokenizer
+    tok = WordTokenizer(["vingroup", "rose", "3.5", "%", "shares"])
+    enc = tok("Vingroup rose 3.5%", return_offsets_mapping=True)
+    assert enc["offset_mapping"] == [(0, 8), (9, 13), (14, 17), (17, 18)]
+    assert tok.unk_id not in enc["input_ids"]
+    batch = tok(["<t> Vingroup </t> rose"], ["Vingroup"], max_length=16)
+    ids = batch["input_ids"][0]
+    assert ids[0] == tok.stoi["<t>"] and ids[2] == tok.stoi["</t>"] and tok.sep_id in ids
+    assert tok.pad_token_id in tok.all_special_ids and tok.unk_id not in tok.all_special_ids
+
+
+def test_lstm_tagger_and_classifier_train(tmp_path):
+    import numpy as np
+    import torch
+    from absa_models import lstm
+    from absa_models.pair_classify import PairClassifier
+    from absa_models.target_extraction import Tagger, batches, encode, tag_set
+    texts = ["Vingroup rose", "FPT fell sharply", "Gold rose on demand"] * 4
+    tok, enc = lstm.build(texts, [], glove=([], np.zeros((0, 300), dtype=np.float32)), log=lambda *a: None)
+    examples = [{"text_id": str(i), "source": "x", "text": t, "spans": [(0, t.index(" "), "positive")]}
+                for i, t in enumerate(texts)]
+    items = encode(tok, examples, tag_set("bio"), "bio", 32)
+    tagger = Tagger("lstm", 3, crf=True, encoder=enc)
+    opt = torch.optim.Adam(tagger.parameters(), lr=1e-2)
+    b = next(batches(items, 12, tok.pad_token_id, shuffle=False))
+    b = {k: v for k, v in b.items() if torch.is_tensor(v)}
+    first = tagger.loss(b).item()
+    for _ in range(30):
+        opt.zero_grad()
+        tagger.loss(b).backward()
+        opt.step()
+    assert tagger.loss(b).item() < first / 3
+    clf = PairClassifier("lstm", 3, len(tok), encoder=enc)
+    x = tok(["<t> Vingroup </t> rose"], ["Vingroup"], max_length=16)
+    logits = clf.logits({"input_ids": torch.tensor(x["input_ids"]), "attention_mask": torch.tensor(x["attention_mask"])})
+    assert logits.shape == (1, 3)

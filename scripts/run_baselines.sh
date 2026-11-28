@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Steps 1a-1c: single-task FinBERT baselines. Needs a GPU (about 1-2 h on a T4 for everything).
+# Steps 1a-1c: single-task baselines for one encoder (MODEL=..., default FinBERT; MODEL=lstm for BiLSTM).
 # Prerequisite: python -m absa_data build   (needs Hugging Face access to FiQA)
 set -euo pipefail
 M=${MODEL:-yiyanghkust/finbert-pretrain}

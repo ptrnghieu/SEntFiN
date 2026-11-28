@@ -48,6 +48,16 @@ def load_table(processed: Path, name: str, sources) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+MODEL_TAGS = {"yiyanghkust/finbert-pretrain": "finbert-pretrain", "yiyanghkust/finbert-tone": "finbert-tone",
+              "ProsusAI/finbert": "prosusai-finbert", "roberta-base": "roberta-base",
+              "FacebookAI/roberta-base": "roberta-base", "lstm": "bilstm-glove"}
+
+
+def model_tag(name: str) -> str:
+    """Short directory name for a model: runs/<task>/<tag>/<run>."""
+    return MODEL_TAGS.get(name, name.rstrip("/").split("/")[-1].lower())
+
+
 def load_tokenizer(name: str):
     """AutoTokenizer, falling back to a BERT WordPiece tokenizer built from vocab.txt.
 

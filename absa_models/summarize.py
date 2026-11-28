@@ -21,7 +21,9 @@ def main(argv=None) -> None:
     root = Path((argv or sys.argv[1:] or ["runs"])[0])
     lines = ["# Baseline results (test split)\n"]
     for task, keys in KEYS.items():
-        runs = sorted((root / task).glob("**/metrics.json"))
+        # rows grouped by run, the models side by side: runs/<task>/<model>/<run>/metrics.json
+        runs = sorted((root / task).glob("**/metrics.json"),
+                      key=lambda f: (f.parent.name, str(f.parent.relative_to(root / task))))
         if not runs:
             continue
         lines += [f"## {task}\n", "| run | " + " | ".join(f"{s} · {m}" for s, m in keys) + " |",

@@ -23,7 +23,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, load_table, set_seed, span_metrics, train_loop, write_results
+from .common import ALL_SOURCES, SOURCES, load_encoder, load_tokenizer, model_tag, load_table, set_seed, span_metrics, train_loop, write_results
 
 POLARITIES = ("negative", "neutral", "positive")
 
@@ -84,9 +84,9 @@ def batches(items: list[dict], batch_size: int, pad_id: int, shuffle: bool, seed
 
 
 class Tagger(nn.Module):
-    def __init__(self, model_name: str, n_tags: int, crf: bool, dropout: float = 0.1):
+    def __init__(self, model_name: str, n_tags: int, crf: bool, dropout: float = 0.1, encoder=None):
         super().__init__()
-        self.encoder = load_encoder(model_name)
+        self.encoder = encoder if encoder is not None else load_encoder(model_name)
         self.dropout = nn.Dropout(dropout)
         self.head = nn.Linear(self.encoder.config.hidden_size, n_tags)
         self.crf = None
@@ -182,22 +182,32 @@ def main(argv=None):
     ap.add_argument("--eval-sources", nargs="+", default=["finentity"], choices=ALL_SOURCES)
     ap.add_argument("--scheme", choices=["bio", "bio-sentiment"], default="bio")
     ap.add_argument("--crf", action="store_true")
-    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--epochs", type=int, help="default 10 (lstm: 30)")
     ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=3e-5)
+    ap.add_argument("--lr", type=float, help="default 3e-5 (lstm: 1e-3)")
     ap.add_argument("--head-lr", type=float, help="LR for the head / CRF (default: --lr)")
     ap.add_argument("--max-length", type=int, default=128)
-    ap.add_argument("--patience", type=int, default=3)
+    ap.add_argument("--patience", type=int, help="default 3 (lstm: 5)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--limit", type=int, help="use at most N texts per split (smoke tests)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    from . import lstm
+    is_lstm = args.model == lstm.MODEL_NAME
+    args.lr = args.lr or (lstm.DEFAULTS["lr"] if is_lstm else 3e-5)
+    args.epochs = args.epochs or (lstm.DEFAULTS["tagging_epochs"] if is_lstm else 10)
+    args.patience = args.patience or (lstm.DEFAULTS["tagging_patience"] if is_lstm else 3)
     set_seed(args.seed)
 
     processed = Path(args.processed)
     srcs = sorted(set(args.train_sources) | set(args.eval_sources))
     texts, pairs = load_table(processed, "texts", srcs), load_table(processed, "pairs", srcs)
-    tok = load_tokenizer(args.model)
+    encoder = None
+    if is_lstm:
+        is_train = (texts["split"] == "train") & texts["source"].isin(args.train_sources)
+        tok, encoder = lstm.build(texts.loc[is_train, "text"], texts.loc[~is_train, "text"], seed=args.seed)
+    else:
+        tok = load_tokenizer(args.model)
     tags = tag_set(args.scheme)
 
     def split(name, sources):
@@ -207,8 +217,8 @@ def main(argv=None):
 
     train, valid, test = split("train", args.train_sources), split("valid", args.eval_sources), split("test", args.eval_sources)
     print(f"train {len(train)} / valid {len(valid)} / test {len(test)} texts; tags {tags}")
-    model = Tagger(args.model, len(tags), args.crf)
-    out = Path(args.out or f"runs/target_extraction/{args.scheme}{'-crf' if args.crf else ''}-{'+'.join(args.train_sources)}")
+    model = Tagger(args.model, len(tags), args.crf, encoder=encoder)
+    out = Path(args.out or f"runs/target_extraction/{model_tag(args.model)}/{args.scheme}{'-crf' if args.crf else ''}-{'+'.join(args.train_sources)}")
     from .common import device
     dev = device()
     key = "all spans+sentiment" if args.scheme == "bio-sentiment" else "all spans"

@@ -260,7 +260,21 @@ OPENAI_API_KEY=... python -m absa_data vnnews        # --no-llm: rebuild from th
 ### Baselines: single-task FinBERT (steps 1a-1c)
 
 Package `absa_models/`; backbone `yiyanghkust/finbert-pretrain` by default (`--model` to change).
-Every run writes `metrics.json`, `metrics.md`, `test_predictions.jsonl` and `best.pt` under `runs/`.
+Every run writes `metrics.json`, `metrics.md`, `test_predictions.jsonl` and `best.pt` under
+`runs/<task>/<model>/<run>/`.
+
+Encoders compared (`bash scripts/run_models.sh` runs the whole matrix for each; `MODELS="..."` to pick):
+
+| `--model` | what it is |
+|---|---|
+| `yiyanghkust/finbert-pretrain` | FinBERT pretrained on financial text (10-K/10-Q, analyst reports, earnings calls), no task head |
+| `ProsusAI/finbert` | BERT-base further trained on financial news, then fine-tuned for sentence sentiment (Financial PhraseBank); its classifier is dropped |
+| `yiyanghkust/finbert-tone` | FinBERT fine-tuned for sentence tone on analyst reports; its classifier is dropped |
+| `roberta-base` | general-domain RoBERTa, to measure what financial pretraining adds |
+| `lstm` | no pretrained encoder: 2-layer BiLSTM over GloVe 6B-300d (`absa_models/lstm.py`); BiLSTM-CRF for 1a, attention + max pooling for 1b/1c; lr 1e-3, more epochs |
+
+The two fine-tuned FinBERTs have seen sentence-level sentiment data: PhraseBank and analyst-report
+sentences, not this project's test sets.
 
 | step | command | trains on | key test metrics |
 |---|---|---|---|
@@ -294,10 +308,12 @@ On a GPU (Colab: Runtime > Change runtime type > T4 GPU), run each step as its o
    python -m absa_data build
    ```
 
-5. Run every baseline, about 1-2 h on a T4, and collect the results in `runs/SUMMARY.md`:
+5. Run every baseline for one encoder (about 35-45 min on a T4), or for all five (about 3 h),
+   and collect the results in `runs/SUMMARY.md`:
 
    ```bash
-   bash scripts/run_baselines.sh
+   bash scripts/run_baselines.sh                 # MODEL=roberta-base bash scripts/run_baselines.sh
+   bash scripts/run_models.sh                    # all five encoders
    ```
 
 On **Kaggle**, use [`notebooks/kaggle_baselines.ipynb`](notebooks/kaggle_baselines.ipynb). It reads the Hugging Face token from a Kaggle secret named `HF_TOKEN`; GPU T4 and internet must be enabled. Run it with *Save & Run All (Commit)*, so it keeps running in the background.
