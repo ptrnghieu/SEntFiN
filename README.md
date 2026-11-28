@@ -341,6 +341,8 @@ tasks train the encoder; selected on valid triplet F1 and scored like the pipeli
 | `--markers` | levitated markers (PL-Marker): a `<t> </t>` pair per span after the text, sharing the span's position ids, invisible to the text | target-aware span representations in one model (where the pipeline still wins) |
 
 A test checks that the text's hidden states are unchanged by the markers, for BERT and RoBERTa.
+To split the ablation across several Kaggle notebooks, use `notebooks/kaggle_ablation.ipynb` (edit only its
+first cell: `SEEDS`, `VARIANTS`, `EPOCHS`); step-by-step guide: [`docs/kaggle_ablation.md`](docs/kaggle_ablation.md).
 
 **Over seeds.** `scripts/run_seeds.sh` (default RoBERTa-base, seeds 42 43 44; `MODEL=` / `SEEDS=` to
 change) runs, per seed, the pipeline (pair classifiers with 10 epochs), the multi-task model with 10
