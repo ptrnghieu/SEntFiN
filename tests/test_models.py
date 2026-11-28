@@ -200,3 +200,78 @@ def test_aggregate_over_seeds(tmp_path):
     assert set(groups) == {("pipeline", "-"), ("multitask", "e10")}
     text = table(groups)
     assert "| pipeline | - | 2 | 0.710 ± 0.014 |" in text and "| multitask | e10 | 2 | 0.730 ± 0.028 |" in text
+
+
+@pytest.mark.parametrize("name", [TINY, "hf-internal-testing/tiny-random-RobertaModel"])
+def test_levitated_markers_leave_text_states_unchanged(name):
+    import torch
+    from absa_models.common import load_encoder, load_tokenizer
+    from absa_models.multitask import levitate
+    try:
+        tok, enc = load_tokenizer(name), load_encoder(name).eval()
+    except Exception as e:  # offline
+        pytest.skip(f"{name} unavailable: {e}")
+    tok.add_special_tokens({"additional_special_tokens": ["<t>", "</t>"]})
+    enc.resize_token_embeddings(len(tok))
+    b = tok(["Vingroup rose while VN-Index fell", "FPT gained"], padding=True, return_tensors="pt")
+    spans = torch.tensor([[0, 1, 1], [0, 4, 6], [1, 1, 1]])
+    with torch.no_grad():
+        plain = enc(input_ids=b["input_ids"], attention_mask=b["attention_mask"]).last_hidden_state
+        ids, allow, pos, io, ic = levitate(enc, b["input_ids"], b["attention_mask"], spans,
+                                           *tok.convert_tokens_to_ids(["<t>", "</t>"]), tok.pad_token_id)
+        marked = enc(input_ids=ids, attention_mask=allow, position_ids=pos).last_hidden_state
+    n = b["input_ids"].size(1)
+    real = b["attention_mask"].bool()
+    assert torch.allclose(marked[:, :n][real], plain[real], atol=1e-5)
+    assert ids[0, io[1]] == tok.convert_tokens_to_ids("<t>") and pos[0, io[1]] == pos[0, 4] and pos[0, ic[1]] == pos[0, 6]
+    assert io[2] == n and ic[2] == n + 1  # second sentence: its only span uses the first marker slot
+
+
+def test_hier_aspect_and_ordinal_sentiment_heads_give_distributions(tok):
+    import torch
+    from absa_models.multitask import ASPECT_L1, L1_OF, MultiTask
+    torch.manual_seed(0)
+    m = MultiTask(TINY, aspect_head="hier", sentiment_loss="ordinal", sentence_context=True)
+    h = m.encoder.config.hidden_size
+    r, a = torch.randn(5, 2 * h), torch.randn(5, 3 * h)
+    pa = m.aspect_logprobs(a).exp()
+    assert torch.allclose(pa.sum(-1), torch.ones(5), atol=1e-5)
+    l1 = torch.zeros(5, len(ASPECT_L1)).index_add_(1, torch.tensor(L1_OF), pa)
+    assert torch.allclose(l1, torch.softmax(m.aspect_l1_head(a), -1), atol=1e-5)  # marginal = l1 head
+    ps = m.sentiment_logprobs(r).exp()
+    assert (ps >= 0).all() and torch.allclose(ps.sum(-1), torch.ones(5), atol=1e-4)
+    target = torch.tensor([[0.0, 0.1, 0.9]] * 5)
+    loss = m.sentiment_loss(r, target)
+    loss.backward()
+    assert torch.isfinite(loss) and m.theta.grad is not None
+
+
+def test_multitask_all_options_learn(tok):
+    import torch
+    from absa_models.multitask import MultiTask, batches, encode, predict_all, parse_weights
+    from absa_models.pair_classify import ASPECTS
+    tok.add_special_tokens({"additional_special_tokens": ["<t>", "</t>"]})
+    exs = [{"text_id": str(i), "source": "x", "text": t,
+            "spans": [(0, t.index(" "), "positive", [0.0, 0.1, 0.9], ASPECTS.index("Stock/Price Movement"), c)]}
+           for i, (t, c) in enumerate([("Vingroup rose sharply", "high"), ("FPT gained today", "medium"),
+                                       ("Gold rose on demand", "low")])]
+    items = encode(tok, exs, 32)
+    w = parse_weights("default")
+    b = next(batches(items, 8, tok.pad_token_id, shuffle=False, confidence_weights=w))
+    assert b["span_aspect_weight"].tolist() == [1.0, 0.5, 0.25]
+    torch.manual_seed(0)
+    model = MultiTask(TINY, soft=True, aspect_head="hier", sentence_context=True, sentiment_loss="ordinal",
+                      markers=True, marker_ids=tuple(tok.convert_tokens_to_ids(["<t>", "</t>"])),
+                      pad_id=tok.pad_token_id, vocab_size=len(tok))
+    opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+    first = model.loss(b).item()
+    for _ in range(60):
+        opt.zero_grad()
+        model.loss(b).backward()
+        opt.step()
+    assert model.loss(b).item() < first / 4
+    pred = predict_all(model, items, 8, tok.pad_token_id)
+    for ex in exs:
+        for t in pred[ex["text_id"]]:
+            assert ex["text"][t["start"]:t["end"]] == t["target"] and t["aspect"] in ASPECTS
+    assert sum(len(v) for v in pred.values()) >= 1

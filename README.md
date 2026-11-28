@@ -330,6 +330,18 @@ span-to-context attention. Loss = CRF + sentiment (soft labels with `--soft`) + 
 tasks train the encoder; selected on valid triplet F1 and scored like the pipeline
 (`runs/multitask/<model>/`).
 
+**Multi-task options** (each off by default, `scripts/run_ablation.sh` compares them over seeds):
+
+| flag | idea | aimed at |
+|---|---|---|
+| `--aspect-head hier` | P(l2) = P(l1) · P(l2 \| l1), trained on both levels | aspect errors across level-1 groups (55% of aspect errors) |
+| `--sentence-context` | the aspect head also sees the sentence vector | aspects are often the topic of the sentence |
+| `--aspect-confidence` | aspect loss weighted by the LLM's confidence (high 1, medium 0.5, low 0.25) | noisy silver aspects |
+| `--sentiment-loss ordinal` | cumulative-link head, negative < neutral < positive, soft cumulative targets | 86% of sentiment errors involve neutral |
+| `--markers` | levitated markers (PL-Marker): a `<t> </t>` pair per span after the text, sharing the span's position ids, invisible to the text | target-aware span representations in one model (where the pipeline still wins) |
+
+A test checks that the text's hidden states are unchanged by the markers, for BERT and RoBERTa.
+
 **Over seeds.** `scripts/run_seeds.sh` (default RoBERTa-base, seeds 42 43 44; `MODEL=` / `SEEDS=` to
 change) runs, per seed, the pipeline (pair classifiers with 10 epochs), the multi-task model with 10
 and with 20 epochs, and writes mean ± sd to `runs/seeds/SEEDS.md` (`python -m absa_models.aggregate`).
