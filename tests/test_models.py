@@ -157,3 +157,29 @@ def test_pipeline_reloads_runs_and_writes_triplets(tmp_path):
         for t in trips:
             assert text[t["start"]:t["end"]] == t["target"]
             assert t["sentiment"] in SENTIMENTS and t["aspect"] in ASPECTS
+
+
+def test_multitask_learns_and_predicts_triplets(tok):
+    import torch
+    from absa_models.multitask import MultiTask, batches, encode, predict_all
+    from absa_models.pair_classify import ASPECTS
+    exs = [{"text_id": str(i), "source": "x", "text": t,
+            "spans": [(0, t.index(" "), "positive", [0.0, 0.1, 0.9], ASPECTS.index("Stock/Price Movement"))]}
+           for i, t in enumerate(["Vingroup rose sharply", "FPT gained today", "Gold rose on demand"])]
+    items = encode(tok, exs, 32)
+    assert all(len(it["gold"]) == 1 and it["labels"].count(1) == 1 for it in items)
+    torch.manual_seed(0)
+    model = MultiTask(TINY, soft=True)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+    b = next(batches(items, 8, tok.pad_token_id, shuffle=False))
+    first = model.loss(b).item()
+    for _ in range(60):
+        opt.zero_grad()
+        model.loss(b).backward()
+        opt.step()
+    assert model.loss(b).item() < first / 4
+    pred = predict_all(model, items, 8, tok.pad_token_id)
+    for ex in exs:
+        for t in pred[ex["text_id"]]:
+            assert ex["text"][t["start"]:t["end"]] == t["target"] and t["aspect"] in ASPECTS
+    assert sum(len(v) for v in pred.values()) >= 1

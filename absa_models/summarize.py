@@ -14,6 +14,8 @@ KEYS = {  # (task dir, metric subset, metric) shown per run
                   ("fiqa_finben, gold only", "accuracy"), ("fiqa_finben, gold only", "macro_f1")],
     "pipeline": [("finentity span", "f1"), ("finentity span+sentiment", "f1"), ("finentity triplet", "f1"),
                  ("all triplet", "f1"), ("all triplet (aspect level 1)", "f1")],
+    "multitask": [("finentity span", "f1"), ("finentity span+sentiment", "f1"), ("finentity triplet", "f1"),
+                  ("all triplet", "f1"), ("all triplet (aspect level 1)", "f1")],
     "aspect": [("all", "macro_f1"), ("all, level 1", "macro_f1"), ("fiqa vs human gold aspects (mapped)", "accuracy"),
                ("fiqa vs human gold aspects (mapped)", "macro_f1")],
 }

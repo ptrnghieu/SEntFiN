@@ -324,6 +324,12 @@ JSON line per text, with character offsets or just the target string (LLM output
 `absa_models/pipeline.py` chains three trained runs (1a -> 1b -> 1c) into the pipeline baseline;
 `scripts/run_models.sh` runs it for every encoder (`runs/pipeline/<model>/`).
 
+**Multi-task model (direction 1).** `absa_models/multitask.py`: one shared encoder, a BIO + CRF
+tagger for the targets and, per span, sentiment and aspect heads on [first; last; mean; width] plus
+span-to-context attention. Loss = CRF + sentiment (soft labels with `--soft`) + aspect, so all three
+tasks train the encoder; selected on valid triplet F1 and scored like the pipeline
+(`runs/multitask/<model>/`).
+
 On **Kaggle**, use [`notebooks/kaggle_baselines.ipynb`](notebooks/kaggle_baselines.ipynb). It reads the Hugging Face token from a Kaggle secret named `HF_TOKEN`; GPU T4 and internet must be enabled. Run it with *Save & Run All (Commit)*, so it keeps running in the background.
 
 `tests/test_models.py` checks the code on CPU with a tiny random BERT: tags round-trip to the gold

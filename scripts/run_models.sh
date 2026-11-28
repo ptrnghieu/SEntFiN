@@ -14,6 +14,8 @@ for M in $MODELS; do
     --extractor runs/target_extraction/$T/bio-crf-finentity+sentfin+fiqa \
     --sentiment runs/sentiment/$T/sentfin+fiqa+finentity-soft-cw \
     --aspect runs/aspect/$T/sentfin+fiqa+finentity
+  # Direction 1: the multi-task triplet model with the same encoder
+  python -m absa_models.multitask --model $M --soft
   [ "${KEEP_CHECKPOINTS:-0}" = 1 ] || find runs -name best.pt -delete
 done
 python -m absa_models.summarize runs
