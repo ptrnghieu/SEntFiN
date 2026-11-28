@@ -122,3 +122,38 @@ def test_lstm_tagger_and_classifier_train(tmp_path):
     x = tok(["<t> Vingroup </t> rose"], ["Vingroup"], max_length=16)
     logits = clf.logits({"input_ids": torch.tensor(x["input_ids"]), "attention_mask": torch.tensor(x["attention_mask"])})
     assert logits.shape == (1, 3)
+
+
+def test_pipeline_reloads_runs_and_writes_triplets(tmp_path):
+    import json
+
+    import numpy as np
+    import pandas as pd
+    import torch
+    from absa_models import lstm
+    from absa_models.pair_classify import ASPECTS, SENTIMENTS, PairClassifier
+    from absa_models.pipeline import run_pipeline
+    from absa_models.target_extraction import Tagger, tag_set
+    texts = pd.DataFrame({"text_id": ["a", "b"], "source": "finentity",
+                          "text": ["Vingroup rose on Monday", "FPT fell"]})
+    tok, enc = lstm.build(texts["text"], [], glove=([], np.zeros((0, 300), dtype=np.float32)), log=lambda *a: None)
+    runs = {}
+    for name, model, cfg in [
+        ("ext", Tagger("lstm", 3, True, encoder=enc), {"scheme": "bio", "crf": True}),
+        ("sent", PairClassifier("lstm", len(SENTIMENTS), len(tok), encoder=lstm.LSTMEncoder(
+            torch.zeros(len(tok), 300))), {"task": "sentiment"}),
+        ("asp", PairClassifier("lstm", len(ASPECTS), len(tok), encoder=lstm.LSTMEncoder(
+            torch.zeros(len(tok), 300))), {"task": "aspect"}),
+    ]:
+        d = tmp_path / name
+        lstm.save_vocab(tok, d)
+        torch.save(model.state_dict(), d / "best.pt")
+        (d / "metrics.json").write_text(json.dumps({"config": {"model": "lstm", "max_length": 32, **cfg}}))
+        runs[name] = d
+    out = run_pipeline(texts, runs["ext"], runs["sent"], runs["asp"])
+    assert set(out) == {"a", "b"}
+    for tid, trips in out.items():
+        text = texts.set_index("text_id").at[tid, "text"]
+        for t in trips:
+            assert text[t["start"]:t["end"]] == t["target"]
+            assert t["sentiment"] in SENTIMENTS and t["aspect"] in ASPECTS

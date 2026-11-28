@@ -194,6 +194,8 @@ def main(argv=None):
     pad = tok.pad_token_id
     out = Path(args.out or f"runs/{args.task}/{model_tag(args.model)}/{'+'.join(args.train_sources)}"
                f"{'-soft' if args.soft else ''}{'-gold' if args.gold_only else ''}{'-cw' if args.class_weights else ''}")
+    if is_lstm:
+        lstm.save_vocab(tok, out)
     ep = {"n": 0}
 
     def train_batches():

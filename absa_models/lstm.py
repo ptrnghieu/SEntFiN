@@ -111,6 +111,21 @@ def build(train_texts, other_texts, glove: tuple[list[str], np.ndarray] | None =
     return tok, LSTMEncoder(torch.from_numpy(matrix))
 
 
+def save_vocab(tok: WordTokenizer, out_dir) -> None:
+    import json
+    from pathlib import Path
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / "vocab.json").write_text(json.dumps(tok.itos, ensure_ascii=False), encoding="utf-8")
+
+
+def from_saved(out_dir, dim: int = 300) -> tuple[WordTokenizer, "LSTMEncoder"]:
+    """Tokenizer + an encoder of the right shape for a run's best.pt (the weights come from the state dict)."""
+    import json
+    from pathlib import Path
+    tok = WordTokenizer(json.loads((Path(out_dir) / "vocab.json").read_text(encoding="utf-8")))
+    return tok, LSTMEncoder(torch.zeros(len(tok), dim))
+
+
 class LSTMEncoder(nn.Module):
     """Embedding -> 2-layer BiLSTM. Returns `last_hidden_state` (per token) and `pooled` (per text)."""
 

@@ -221,6 +221,8 @@ def main(argv=None):
     out = Path(args.out or f"runs/target_extraction/{model_tag(args.model)}/{args.scheme}{'-crf' if args.crf else ''}-{'+'.join(args.train_sources)}")
     from .common import device
     dev = device()
+    if is_lstm:
+        lstm.save_vocab(tok, out)
     key = "all spans+sentiment" if args.scheme == "bio-sentiment" else "all spans"
     score_key = "macro_f1" if args.scheme == "bio-sentiment" else "f1"
     epoch = {"n": 0}

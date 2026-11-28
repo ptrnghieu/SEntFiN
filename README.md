@@ -316,6 +316,14 @@ On a GPU (Colab: Runtime > Change runtime type > T4 GPU), run each step as its o
    bash scripts/run_models.sh                    # all five encoders
    ```
 
+**End-to-end triplets.** `absa_models/triplets.py` scores any system's (target, aspect,
+sentiment) output against the complete-target test texts, at five levels (span,
+span+sentiment, span+aspect, triplet, triplet with level-1 aspects), per source; FinEntity is the
+human reference for targets and sentiment, aspects are LLM labels everywhere. Predictions are one
+JSON line per text, with character offsets or just the target string (LLM outputs).
+`absa_models/pipeline.py` chains three trained runs (1a -> 1b -> 1c) into the pipeline baseline;
+`scripts/run_models.sh` runs it for every encoder (`runs/pipeline/<model>/`).
+
 On **Kaggle**, use [`notebooks/kaggle_baselines.ipynb`](notebooks/kaggle_baselines.ipynb). It reads the Hugging Face token from a Kaggle secret named `HF_TOKEN`; GPU T4 and internet must be enabled. Run it with *Save & Run All (Commit)*, so it keeps running in the background.
 
 `tests/test_models.py` checks the code on CPU with a tiny random BERT: tags round-trip to the gold
