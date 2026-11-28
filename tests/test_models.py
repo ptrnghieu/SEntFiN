@@ -183,3 +183,20 @@ def test_multitask_learns_and_predicts_triplets(tok):
         for t in pred[ex["text_id"]]:
             assert ex["text"][t["start"]:t["end"]] == t["target"] and t["aspect"] in ASPECTS
     assert sum(len(v) for v in pred.values()) >= 1
+
+
+def test_aggregate_over_seeds(tmp_path):
+    import json
+    from absa_models.aggregate import collect, table
+    for system, variant, seed, f1 in [("pipeline", "", 1, 0.70), ("pipeline", "", 2, 0.72),
+                                      ("multitask", "e10-", 1, 0.71), ("multitask", "e10-", 2, 0.75)]:
+        d = tmp_path / system / f"{variant}s{seed}"
+        d.mkdir(parents=True)
+        (d / "metrics.json").write_text(json.dumps({"test": {"all triplet": {"f1": f1}}}))
+    comp = tmp_path / "sentiment" / "s1"
+    comp.mkdir(parents=True)
+    (comp / "metrics.json").write_text(json.dumps({"test": {"all": {"macro_f1": 0.9}}}))
+    groups = collect(tmp_path)
+    assert set(groups) == {("pipeline", "-"), ("multitask", "e10")}
+    text = table(groups)
+    assert "| pipeline | - | 2 | 0.710 ± 0.014 |" in text and "| multitask | e10 | 2 | 0.730 ± 0.028 |" in text

@@ -330,6 +330,11 @@ span-to-context attention. Loss = CRF + sentiment (soft labels with `--soft`) + 
 tasks train the encoder; selected on valid triplet F1 and scored like the pipeline
 (`runs/multitask/<model>/`).
 
+**Over seeds.** `scripts/run_seeds.sh` (default RoBERTa-base, seeds 42 43 44; `MODEL=` / `SEEDS=` to
+change) runs, per seed, the pipeline (pair classifiers with 10 epochs), the multi-task model with 10
+and with 20 epochs, and writes mean ± sd to `runs/seeds/SEEDS.md` (`python -m absa_models.aggregate`).
+Identical RoBERTa reruns differ by up to 2 points, so compare systems over seeds.
+
 On **Kaggle**, use [`notebooks/kaggle_baselines.ipynb`](notebooks/kaggle_baselines.ipynb). It reads the Hugging Face token from a Kaggle secret named `HF_TOKEN`; GPU T4 and internet must be enabled. Run it with *Save & Run All (Commit)*, so it keeps running in the background.
 
 `tests/test_models.py` checks the code on CPU with a tiny random BERT: tags round-trip to the gold
